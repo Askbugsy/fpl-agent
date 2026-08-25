@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_entry_picks, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation
 from config import TEAM_ID
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -94,6 +94,17 @@ def main():
               f"Budget if sold: £{t['budget_available']}m")
         for c in t["candidates"]:
             print(f"      -> {c['name']:<18} £{c['price']}m  form={c['form']}  value={c['value_score']}")
+
+    print("\n=== Recommended formation for upcoming fixtures ===")
+    formation = get_optimal_formation(TEAM_ID)
+    if formation.get("formation"):
+        print(f"  Best shape: {formation['formation']}  (projected {formation['projected_total']} pts)")
+        print(f"  Suggested captain: {formation['suggested_captain']['name']}")
+        print("  All formations compared:")
+        for c in formation["all_formations"]:
+            print(f"    {c['formation']:<8} {c['projected_total']} pts")
+    else:
+        print(f"  {formation.get('reason', 'Not enough data yet.')}")
 
 
 if __name__ == "__main__":

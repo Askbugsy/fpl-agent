@@ -316,15 +316,19 @@ def save_fixtures(fixtures: list[dict]) -> None:
     conn.close()
 
 
-def get_captain_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60) -> list[dict]:
+def get_squad_player_projections(entry_id: int, min_minutes: int = 0) -> list[dict]:
     """
-    Captain suggestion, restricted to your CURRENT STARTING XI only -
-    not the full player pool. You can only captain someone who's
-    actually in your squad and starting, so that's the only pool
-    that makes sense here.
+    Computes the same transparent projected-score formula used for
+    captaincy - form x fixture favourability - for EVERY player in
+    your 15-man squad (not just starters). This is the shared
+    building block behind both get_captain_suggestions and the
+    formation optimizer below, so the two features can never
+    silently drift out of sync with different formulas.
 
-    score = form * (6 - difficulty) / 5   (see get_captain_suggestions
-    docstring below for the fixture-weighting logic - unchanged)
+    score = form * (6 - difficulty) / 5
+    Easy fixture (difficulty 1) -> multiplier 1.0
+    Hard fixture (difficulty 5) -> multiplier 0.2
+    No fixture data yet -> falls back to form alone (multiplier 1.0)
     """
     conn = get_connection()
     conn.row_factory = sqlite3.Row
@@ -335,17 +339,16 @@ def get_captain_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60
     latest_gw = conn.execute(
         "SELECT MAX(gameweek) AS gw FROM squad_picks WHERE entry_id = ?", (entry_id,)
     ).fetchone()["gw"]
-
     if latest_gw is None:
         conn.close()
         return []
 
     players = conn.execute(
-        """SELECT ps.player_id, ps.name, ps.team, ps.position, ps.form, ps.price
+        """SELECT sp.multiplier, ps.player_id, ps.name, ps.team, ps.position,
+                  ps.form, ps.price, ps.photo_code
            FROM squad_picks sp
            JOIN player_snapshots ps ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
-           WHERE sp.entry_id = ? AND sp.gameweek = ? AND sp.multiplier > 0
-             AND ps.minutes >= ?""",
+           WHERE sp.entry_id = ? AND sp.gameweek = ? AND ps.minutes >= ?""",
         (latest_date, entry_id, latest_gw, min_minutes),
     ).fetchall()
 
@@ -365,8 +368,8 @@ def get_captain_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60
             difficulty = fixture["team_h_difficulty"] if is_home else fixture["team_a_difficulty"]
             opponent_id = fixture["team_a"] if is_home else fixture["team_h"]
 
-        multiplier = (6 - difficulty) / 5 if difficulty else 1.0
-        score = round(p["form"] * multiplier, 2)
+        fixture_multiplier = (6 - difficulty) / 5 if difficulty else 1.0
+        score = round(p["form"] * fixture_multiplier, 2)
 
         opponent_name = None
         if opponent_id:
@@ -376,14 +379,101 @@ def get_captain_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60
             opponent_name = row["short_name"] if row else None
 
         results.append({
-            "player_id": p["player_id"], "name": p["name"], "position": p["position"], "form": p["form"],
-            "price": p["price"], "difficulty": difficulty,
+            "player_id": p["player_id"], "name": p["name"], "position": p["position"],
+            "form": p["form"], "price": p["price"], "photo_code": p["photo_code"],
+            "multiplier": p["multiplier"], "difficulty": difficulty,
             "opponent": opponent_name, "is_home": is_home, "score": score,
         })
 
     conn.close()
-    results.sort(key=lambda r: r["score"], reverse=True)
-    return results[:limit]
+    return results
+
+
+def get_captain_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60) -> list[dict]:
+    """
+    Captain suggestion, restricted to your CURRENT STARTING XI only -
+    not the full player pool. You can only captain someone who's
+    actually in your squad and starting, so that's the only pool
+    that makes sense here. Uses get_squad_player_projections above
+    for the actual scoring.
+    """
+    projections = get_squad_player_projections(entry_id, min_minutes)
+    starters = [p for p in projections if p["multiplier"] > 0]
+    starters.sort(key=lambda r: r["score"], reverse=True)
+    return starters[:limit]
+
+
+VALID_FORMATIONS = [
+    (d, m, f)
+    for d in range(3, 6)      # 3-5 defenders
+    for m in range(2, 6)      # 2-5 midfielders
+    for f in range(1, 4)      # 1-3 forwards
+    if d + m + f == 10        # +1 GK = 11 starters total
+]
+
+
+def get_optimal_formation(entry_id: int, min_minutes: int = 0) -> dict:
+    """
+    Tries every FPL-legal formation (3-4-3, 3-5-2, 4-4-2, 4-5-1,
+    5-3-2, etc.) and works out which one gives the highest total
+    projected score from your actual 15-man squad.
+
+    For a FIXED formation, the best XI is simply the top-N scoring
+    players within each position group - since scores are additive
+    across independent groups (no interaction between your defence
+    and midfield picks), greedy top-N per group is mathematically
+    optimal for that formation. The only real work is comparing
+    across all valid formations to find the best one overall.
+
+    Returns the recommended formation, its starting XI + bench, a
+    suggested captain, and a comparison table of every formation's
+    projected total (so you can see *why* one beats the others, not
+    just trust a black-box recommendation).
+    """
+    projections = get_squad_player_projections(entry_id, min_minutes)
+    if not projections:
+        return {"formation": None, "reason": "No squad data available yet."}
+
+    by_position = {1: [], 2: [], 3: [], 4: []}
+    for p in projections:
+        by_position[p["position"]].append(p)
+    for pos in by_position:
+        by_position[pos].sort(key=lambda p: p["score"], reverse=True)
+
+    if not by_position[1]:
+        return {"formation": None, "reason": "No goalkeeper data available yet."}
+    best_gk = by_position[1][0]  # same keeper regardless of outfield shape
+
+    comparisons = []
+    best = None
+
+    for d, m, f in VALID_FORMATIONS:
+        if len(by_position[2]) < d or len(by_position[3]) < m or len(by_position[4]) < f:
+            continue  # squad doesn't have enough players in this position for this shape
+
+        defenders = by_position[2][:d]
+        midfielders = by_position[3][:m]
+        forwards = by_position[4][:f]
+        xi = [best_gk] + defenders + midfielders + forwards
+        total = round(sum(p["score"] for p in xi), 2)
+
+        label = f"{d}-{m}-{f}"
+        comparisons.append({"formation": label, "projected_total": total})
+
+        if best is None or total > best["projected_total"]:
+            xi_ids = {p["player_id"] for p in xi}
+            bench = [p for p in projections if p["player_id"] not in xi_ids]
+            bench.sort(key=lambda p: p["score"], reverse=True)
+            captain = max(xi, key=lambda p: p["score"])
+            best = {
+                "formation": label, "projected_total": total,
+                "starting_xi": xi, "bench": bench, "suggested_captain": captain,
+            }
+
+    comparisons.sort(key=lambda c: c["projected_total"], reverse=True)
+    if best:
+        best["all_formations"] = comparisons
+    return best or {"formation": None, "reason": "Not enough players in each position yet."}
 
 
 def get_squad_team_ids(entry_id: int) -> list[int]:
