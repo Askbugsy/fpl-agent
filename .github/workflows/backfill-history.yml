@@ -1,0 +1,38 @@
+name: FPL Historical Backfill (run once)
+
+# workflow_dispatch ONLY - this is deliberately NOT scheduled.
+# It's a heavy job (~700 API calls) meant to be run once, or
+# occasionally re-run (e.g. once a new season starts). Triggering
+# this every week would be wasteful and pointless - the weekly
+# fpl-update.yml workflow handles ongoing updates.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the historical backfill
+        run: python3 backfill_history.py
+
+      - name: Commit and push the backfilled data
+        run: |
+          git config user.name "fpl-agent-bot"
+          git config user.email "actions@github.com"
+          git add data/fpl.db
+          git diff --quiet --cached || git commit -m "One-time historical backfill"
+          git push
