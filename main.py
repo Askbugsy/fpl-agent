@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from fpl_client import get_bootstrap_static, get_entry_picks, get_fixtures
+from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures
 from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation
 from config import TEAM_ID
 
@@ -51,7 +51,16 @@ def main():
             picks_data = get_entry_picks(TEAM_ID, current_gw)
             player_points = {p["id"]: p["event_points"] for p in players}
             save_squad_picks(TEAM_ID, current_gw, picks_data, player_points)
-            save_entry_summary(TEAM_ID, current_gw, picks_data.get("entry_history", {}))
+
+            live_summary = None
+            try:
+                live_summary = get_entry_summary(TEAM_ID)
+            except Exception as e:
+                # Rank still saves from entry_history below, just frozen
+                # at whenever that gameweek was scored rather than live.
+                print(f"Could not fetch live rank: {e}\n")
+
+            save_entry_summary(TEAM_ID, current_gw, picks_data.get("entry_history", {}), live_summary)
             print("Squad saved.\n")
         except Exception as e:
             # Picks for the current gameweek aren't published until it's

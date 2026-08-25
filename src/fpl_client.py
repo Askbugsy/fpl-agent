@@ -63,9 +63,28 @@ def get_entry_picks(entry_id: int, event_id: int) -> dict:
     """
     Returns a manager's squad (15 players, formation, captain/vice)
     for one specific gameweek. This is what 'my squad' pulls from.
+
+    Its 'entry_history' block also has 'rank'/'overall_rank' fields,
+    but those are a snapshot from when that gameweek was scored - they
+    don't keep moving afterward as the wider standings shift. Use
+    get_entry_summary() below for rank figures that match what the
+    FPL app shows right now.
     """
     resp = requests.get(
         f"{BASE_URL}/entry/{entry_id}/event/{event_id}/picks/", timeout=10
     )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_entry_summary(entry_id: int) -> dict:
+    """
+    Returns the manager's current, live-updating standing - the same
+    numbers the FPL app's "Team Overview" screen shows. In particular
+    'summary_overall_rank' and 'summary_event_rank' keep tracking the
+    live standings, unlike the picks endpoint's frozen-at-scoring-time
+    entry_history.overall_rank/rank.
+    """
+    resp = requests.get(f"{BASE_URL}/entry/{entry_id}/", timeout=10)
     resp.raise_for_status()
     return resp.json()
