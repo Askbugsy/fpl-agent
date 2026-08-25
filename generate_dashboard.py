@@ -22,7 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value
+from db import get_connection, get_movers, get_top_value, get_latest_squad
+from config import TEAM_ID
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -48,9 +49,16 @@ def build_html() -> str:
     movers = get_movers(limit=10)
     value_picks = get_top_value(limit=10)
     full_table, latest_date = get_latest_full_table()
+    squad = get_latest_squad(TEAM_ID)
 
     for row in full_table:
         row["position"] = POSITION_NAMES.get(row["position"], "?")
+    for row in squad:
+        row["position"] = POSITION_NAMES.get(row["position"], "?")
+
+    starters = [r for r in squad if r["multiplier"] > 0]
+    bench = [r for r in squad if r["multiplier"] == 0]
+    squad_total = sum((r["gw_points"] or 0) * r["multiplier"] for r in starters)
 
     movers_json = json.dumps(movers)
     value_json = json.dumps(value_picks)
@@ -73,11 +81,27 @@ def build_html() -> str:
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #30363d; }}
   th {{ cursor: pointer; color: #58a6ff; position: sticky; top: 0; background: #161b22; }}
   .scroll {{ max-height: 400px; overflow-y: auto; }}
+  .squad-row {{ padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 0.9rem; }}
+  .squad-row.bench {{ color: #8b949e; }}
+  .pos-tag {{ color: #58a6ff; font-size: 0.75rem; }}
+  .squad-list strong {{ display: block; margin: 10px 0 4px; }}
 </style>
 </head>
 <body>
   <h1>⚽ FPL Agent Dashboard</h1>
   <div class="updated">Latest data: {latest_date}</div>
+
+  <div class="card">
+    <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
+    {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else f'''
+    <div class="squad-list">
+      <strong>Starting XI</strong>
+      {"".join(f'<div class="squad-row">{r["name"]} <span class="pos-tag">{r["position"]}</span>{" (C)" if r["is_captain"] else " (V)" if r["is_vice_captain"] else ""} &mdash; {(r["gw_points"] or 0) * r["multiplier"]} pts</div>' for r in starters)}
+      <strong>Bench</strong>
+      {"".join(f'<div class="squad-row bench">{r["name"]} <span class="pos-tag">{r["position"]}</span> &mdash; {r["gw_points"] or 0} pts</div>' for r in bench)}
+    </div>
+    '''}
+  </div>
 
   <div class="card">
     <h2>Movers &amp; Shakers (form change since last week)</h2>
