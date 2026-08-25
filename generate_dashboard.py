@@ -56,46 +56,35 @@ def player_link(player_id: int, name: str) -> str:
 
 
 def render_formation_card(formation: dict) -> str:
+    """
+    Renders the comparison table server-side (so it's visible even
+    if JS fails to load) but leaves the pitch/bench/summary as empty
+    placeholders - selectFormation() in the <script> block below
+    fills those in from the embedded per-formation JSON, and swaps
+    them again whenever a comparison row is clicked. Keeps the actual
+    pitch-building logic in exactly one place (JS) instead of
+    duplicating it between Python and JS.
+    """
     if not formation.get("formation"):
         return f'<p>{formation.get("reason", "Not enough data yet.")}</p>'
 
-    xi_by_pos = {1: [], 2: [], 3: [], 4: []}
-    for p in formation["starting_xi"]:
-        xi_by_pos[p["position"]].append(p)
-
-    def pitch_row(players, row_class=""):
-        cells = "".join(
-            f'<div class="pitch-player{" is-captain" if p["player_id"] == formation["suggested_captain"]["player_id"] else ""}">'
-            f'{player_link(p["player_id"], p["name"])}<br><span class="pitch-score">{p["score"]}{" (C)" if p["player_id"] == formation["suggested_captain"]["player_id"] else ""}</span>'
-            f'</div>'
-            for p in players
+    def comparison_row(c: dict) -> str:
+        is_best = c["formation"] == formation["formation"]
+        best_tag = " <span class='best-tag'>Recommended</span>" if is_best else ""
+        return (
+            f'<div class="formation-compare-row{" best" if is_best else ""}" '
+            f'data-formation="{c["formation"]}" onclick="selectFormation(\'{c["formation"]}\')">'
+            f'{c["formation"]} &mdash; {c["projected_total"]} pts{best_tag}</div>'
         )
-        return f'<div class="pitch-row {row_class}">{cells}</div>'
 
-    comparison_rows = "".join(
-        f'<div class="formation-compare-row{" best" if c["formation"] == formation["formation"] else ""}">'
-        f'{c["formation"]} &mdash; {c["projected_total"]} pts</div>'
-        for c in formation["all_formations"]
-    )
-
-    bench_html = "".join(
-        f'<div class="squad-row bench">{player_link(p["player_id"], p["name"])} '
-        f'<span class="pos-tag">{POSITION_NAMES.get(p["position"], "?")}</span> &mdash; score {p["score"]}</div>'
-        for p in formation["bench"]
-    )
+    comparison_rows = "".join(comparison_row(c) for c in formation["all_formations"])
 
     return f'''
-    <p><strong>Recommended: {formation["formation"]}</strong> &mdash; projected {formation["projected_total"]} pts,
-       captain <strong>{player_link(formation["suggested_captain"]["player_id"], formation["suggested_captain"]["name"])}</strong></p>
-    <div class="pitch">
-      {pitch_row(xi_by_pos[1])}
-      {pitch_row(xi_by_pos[2])}
-      {pitch_row(xi_by_pos[3])}
-      {pitch_row(xi_by_pos[4])}
-    </div>
+    <p id="formationSummary"></p>
+    <div class="pitch" id="formationPitch"></div>
     <div class="formation-compare">{comparison_rows}</div>
     <strong style="display:block;margin-top:12px;">Bench</strong>
-    {bench_html}
+    <div id="formationBench"></div>
     '''
 
 
@@ -160,10 +149,14 @@ def build_html() -> str:
     profiles = get_all_player_profiles()
     formation = get_optimal_formation(TEAM_ID)
 
+    formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
+
     movers_json = json.dumps(movers)
     value_json = json.dumps(value_picks)
     table_json = json.dumps(full_table)
     profiles_json = json.dumps(profiles)
+    formations_json = json.dumps(formations_by_label)
+    best_formation_json = json.dumps(formation.get("formation"))
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -212,8 +205,11 @@ def build_html() -> str:
   .pitch-player.is-captain {{ border: 1px solid #d29922; }}
   .pitch-score {{ color: #8b949e; font-size: 0.7rem; }}
   .formation-compare {{ margin-top: 12px; font-size: 0.8rem; }}
-  .formation-compare-row {{ padding: 3px 0; color: #8b949e; }}
+  .formation-compare-row {{ padding: 5px 8px; color: #8b949e; cursor: pointer; border-radius: 4px; border: 1px solid transparent; }}
+  .formation-compare-row:hover {{ background: #21262d; }}
   .formation-compare-row.best {{ color: #3fb950; font-weight: bold; }}
+  .formation-compare-row.selected {{ border-color: #58a6ff; background: #21262d; }}
+  .best-tag {{ font-size: 0.65rem; font-weight: normal; color: #0d1117; background: #3fb950; border-radius: 8px; padding: 1px 6px; margin-left: 4px; }}
 </style>
 </head>
 <body>
@@ -299,6 +295,8 @@ const movers = {movers_json};
 const valuePicks = {value_json};
 const fullTable = {table_json};
 const playerProfiles = {profiles_json};
+const allFormations = {formations_json};
+const bestFormationLabel = {best_formation_json};
 
 new Chart(document.getElementById('moversChart'), {{
   type: 'bar',
@@ -392,6 +390,45 @@ function openProfile(playerId) {{
 function closeProfile() {{
   document.getElementById('profileModal').classList.remove('open');
 }}
+
+function buildPitchHTML(xi, captainId) {{
+  const byPos = {{1: [], 2: [], 3: [], 4: []}};
+  xi.forEach(p => byPos[p.position].push(p));
+  return [1, 2, 3, 4].map(pos => {{
+    const cells = byPos[pos].map(p => `
+      <div class="pitch-player${{p.player_id === captainId ? ' is-captain' : ''}}">
+        <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span><br>
+        <span class="pitch-score">${{p.score}}${{p.player_id === captainId ? ' (C)' : ''}}</span>
+      </div>`).join('');
+    return `<div class="pitch-row">${{cells}}</div>`;
+  }}).join('');
+}}
+
+function buildBenchHTML(bench) {{
+  return bench.map(p => `
+    <div class="squad-row bench">
+      <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span>
+      <span class="pos-tag">${{POS_NAMES[p.position] || '?'}}</span> &mdash; score ${{p.score}}
+    </div>`).join('');
+}}
+
+function selectFormation(label) {{
+  const f = allFormations[label];
+  if (!f) return;
+
+  const isBest = label === bestFormationLabel;
+  document.getElementById('formationSummary').innerHTML =
+    `<strong>${{isBest ? 'Recommended' : 'Selected'}}: ${{f.formation}}</strong> &mdash; projected ${{f.projected_total}} pts, ` +
+    `captain <strong><span class="player-link" onclick="openProfile(${{f.suggested_captain.player_id}})">${{f.suggested_captain.name}}</span></strong>`;
+  document.getElementById('formationPitch').innerHTML = buildPitchHTML(f.starting_xi, f.suggested_captain.player_id);
+  document.getElementById('formationBench').innerHTML = buildBenchHTML(f.bench);
+
+  document.querySelectorAll('.formation-compare-row').forEach(el => {{
+    el.classList.toggle('selected', el.dataset.formation === label);
+  }});
+}}
+
+if (bestFormationLabel) selectFormation(bestFormationLabel);
 </script>
 </body>
 </html>"""
