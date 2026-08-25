@@ -64,6 +64,23 @@ CREATE TABLE IF NOT EXISTS player_gw_history (
     price REAL,
     PRIMARY KEY (player_id, season, gameweek)
 );
+
+CREATE TABLE IF NOT EXISTS teams (
+    team_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    short_name TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fixtures (
+    fixture_id INTEGER PRIMARY KEY,
+    gameweek INTEGER,
+    team_h INTEGER NOT NULL,
+    team_a INTEGER NOT NULL,
+    team_h_difficulty INTEGER,
+    team_a_difficulty INTEGER,
+    finished INTEGER NOT NULL,
+    kickoff_time TEXT
+);
 """
 
 
@@ -203,6 +220,217 @@ def get_latest_squad(entry_id: int) -> list[dict]:
 
     conn.close()
     return [dict(r) for r in rows]
+
+
+def save_teams(teams: list[dict]) -> None:
+    """Saves the current team ID -> name mapping, used for readable output."""
+    conn = get_connection()
+    rows = [(t["id"], t["name"], t["short_name"]) for t in teams]
+    conn.executemany(
+        "INSERT OR REPLACE INTO teams (team_id, name, short_name) VALUES (?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_fixtures(fixtures: list[dict]) -> None:
+    """
+    Saves the fixture list, including FPL's own 1-5 difficulty
+    rating for each side. Re-running this overwrites old rows for
+    the same fixture, so difficulty ratings / finished status stay
+    current.
+    """
+    conn = get_connection()
+    rows = [
+        (
+            f["id"], f.get("event"), f["team_h"], f["team_a"],
+            f.get("team_h_difficulty"), f.get("team_a_difficulty"),
+            int(f["finished"]), f.get("kickoff_time"),
+        )
+        for f in fixtures
+    ]
+    conn.executemany(
+        """INSERT OR REPLACE INTO fixtures
+           (fixture_id, gameweek, team_h, team_a, team_h_difficulty,
+            team_a_difficulty, finished, kickoff_time)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_captain_suggestions(limit: int = 5, min_minutes: int = 60) -> list[dict]:
+    """
+    A transparent, formula-based captain suggestion - not magic,
+    just: recent form, weighted by how favourable the player's next
+    fixture is (FPL's own 1-5 difficulty rating, lower = easier).
+
+    score = form * (6 - difficulty) / 5
+
+    Easy fixture (difficulty 1) -> multiplier 1.0
+    Hard fixture (difficulty 5) -> multiplier 0.2
+    No fixture data yet -> falls back to form alone (multiplier 1.0)
+
+    This is a simple, adjustable formula, not a prediction model -
+    the point is transparency: you can see exactly why a player is
+    ranked where they are, and tune the weighting yourself later.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    latest_date = conn.execute(
+        "SELECT MAX(snapshot_date) AS d FROM player_snapshots"
+    ).fetchone()["d"]
+
+    players = conn.execute(
+        """SELECT player_id, name, team, position, form, price
+           FROM player_snapshots
+           WHERE snapshot_date = ? AND minutes >= ?""",
+        (latest_date, min_minutes),
+    ).fetchall()
+
+    results = []
+    for p in players:
+        fixture = conn.execute(
+            """SELECT team_h, team_a, team_h_difficulty, team_a_difficulty, gameweek
+               FROM fixtures
+               WHERE (team_h = ? OR team_a = ?) AND finished = 0
+               ORDER BY gameweek ASC LIMIT 1""",
+            (p["team"], p["team"]),
+        ).fetchone()
+
+        difficulty, opponent_id, is_home = None, None, None
+        if fixture:
+            is_home = fixture["team_h"] == p["team"]
+            difficulty = fixture["team_h_difficulty"] if is_home else fixture["team_a_difficulty"]
+            opponent_id = fixture["team_a"] if is_home else fixture["team_h"]
+
+        multiplier = (6 - difficulty) / 5 if difficulty else 1.0
+        score = round(p["form"] * multiplier, 2)
+
+        opponent_name = None
+        if opponent_id:
+            row = conn.execute(
+                "SELECT short_name FROM teams WHERE team_id = ?", (opponent_id,)
+            ).fetchone()
+            opponent_name = row["short_name"] if row else None
+
+        results.append({
+            "name": p["name"], "position": p["position"], "form": p["form"],
+            "price": p["price"], "difficulty": difficulty,
+            "opponent": opponent_name, "is_home": is_home, "score": score,
+        })
+
+    conn.close()
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:limit]
+
+
+def get_squad_team_ids(entry_id: int) -> list[int]:
+    """The set of clubs currently represented in your squad."""
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    latest_gw = conn.execute(
+        "SELECT MAX(gameweek) AS gw FROM squad_picks WHERE entry_id = ?", (entry_id,)
+    ).fetchone()["gw"]
+    latest_date = conn.execute("SELECT MAX(snapshot_date) AS d FROM player_snapshots").fetchone()["d"]
+    rows = conn.execute(
+        """SELECT DISTINCT ps.team FROM squad_picks sp
+           JOIN player_snapshots ps ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
+           WHERE sp.entry_id = ? AND sp.gameweek = ?""",
+        (latest_date, entry_id, latest_gw),
+    ).fetchall()
+    conn.close()
+    return [r["team"] for r in rows]
+
+
+def get_double_and_blank_gameweeks(team_ids: list[int], lookahead: int = 8) -> dict:
+    """
+    Scans upcoming fixtures for each team and flags:
+      - doubles: gameweeks where a team plays 2+ times (Triple Captain signal)
+      - blanks:  gameweeks where a team has no fixture at all (Bench Boost risk /
+                 Free Hit signal)
+    Only looks at unfinished fixtures, within `lookahead` gameweeks of the
+    earliest upcoming one.
+    """
+    if not team_ids:
+        return {"doubles": [], "blanks": []}
+
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    placeholders = ",".join("?" * len(team_ids))
+
+    earliest = conn.execute(
+        "SELECT MIN(gameweek) AS gw FROM fixtures WHERE finished = 0"
+    ).fetchone()["gw"]
+    if earliest is None:
+        conn.close()
+        return {"doubles": [], "blanks": []}
+
+    counts = conn.execute(
+        f"""
+        SELECT gameweek, team_id, COUNT(*) AS n FROM (
+            SELECT gameweek, team_h AS team_id FROM fixtures
+            WHERE finished = 0 AND team_h IN ({placeholders}) AND gameweek BETWEEN ? AND ?
+            UNION ALL
+            SELECT gameweek, team_a AS team_id FROM fixtures
+            WHERE finished = 0 AND team_a IN ({placeholders}) AND gameweek BETWEEN ? AND ?
+        ) GROUP BY gameweek, team_id
+        """,
+        team_ids + [earliest, earliest + lookahead] + team_ids + [earliest, earliest + lookahead],
+    ).fetchall()
+
+    all_gws = range(earliest, earliest + lookahead + 1)
+    seen = {(r["gameweek"], r["team_id"]): r["n"] for r in counts}
+
+    doubles, blanks = [], []
+    for gw in all_gws:
+        for team_id in team_ids:
+            n = seen.get((gw, team_id), 0)
+            team_name = conn.execute(
+                "SELECT short_name FROM teams WHERE team_id = ?", (team_id,)
+            ).fetchone()
+            name = team_name["short_name"] if team_name else str(team_id)
+            if n >= 2:
+                doubles.append({"gameweek": gw, "team": name})
+            elif n == 0:
+                blanks.append({"gameweek": gw, "team": name})
+
+    conn.close()
+    return {"doubles": doubles, "blanks": blanks}
+
+
+def get_chip_suggestions(entry_id: int) -> dict:
+    """
+    Plain-language chip timing hints, built only from doubles/blanks
+    detected above. Deliberately conservative - if there's no clear
+    signal, it says so rather than guessing.
+    """
+    team_ids = get_squad_team_ids(entry_id)
+    dg = get_double_and_blank_gameweeks(team_ids)
+
+    if dg["doubles"]:
+        gws = sorted(set(d["gameweek"] for d in dg["doubles"]))
+        teams_by_gw = {gw: [d["team"] for d in dg["doubles"] if d["gameweek"] == gw] for gw in gws}
+        best_gw = gws[0]
+        triple_captain = (
+            f"GW{best_gw}: {', '.join(teams_by_gw[best_gw])} play(s) twice - "
+            f"strong Triple Captain / Bench Boost window."
+        )
+    else:
+        triple_captain = "No double gameweeks detected in your squad's next few fixtures yet - hold both chips."
+
+    if dg["blanks"]:
+        gws = sorted(set(b["gameweek"] for b in dg["blanks"]))
+        counts = {gw: sum(1 for b in dg["blanks"] if b["gameweek"] == gw) for gw in gws}
+        worst_gw = max(counts, key=counts.get)
+        free_hit = f"GW{worst_gw}: {counts[worst_gw]} of your teams have no fixture - possible Free Hit target."
+    else:
+        free_hit = "No blank gameweeks detected yet for your squad's teams."
+
+    return {"triple_captain_bench_boost": triple_captain, "free_hit": free_hit}
 
 
 def get_top_value(position: int | None = None, min_minutes: int = 90, limit: int = 10) -> list[dict]:

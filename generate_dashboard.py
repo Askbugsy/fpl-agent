@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions
 from config import TEAM_ID
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -50,6 +50,8 @@ def build_html() -> str:
     value_picks = get_top_value(limit=10)
     full_table, latest_date = get_latest_full_table()
     squad = get_latest_squad(TEAM_ID)
+    captain_picks = get_captain_suggestions(limit=5)
+    chip_advice = get_chip_suggestions(TEAM_ID)
 
     for row in full_table:
         row["position"] = POSITION_NAMES.get(row["position"], "?")
@@ -85,6 +87,7 @@ def build_html() -> str:
   .squad-row.bench {{ color: #8b949e; }}
   .pos-tag {{ color: #58a6ff; font-size: 0.75rem; }}
   .squad-list strong {{ display: block; margin: 10px 0 4px; }}
+  .subtitle {{ color: #8b949e; font-size: 0.75rem; font-weight: normal; }}
 </style>
 </head>
 <body>
@@ -101,6 +104,23 @@ def build_html() -> str:
       {"".join(f'<div class="squad-row bench">{r["name"]} <span class="pos-tag">{r["position"]}</span> &mdash; {r["gw_points"] or 0} pts</div>' for r in bench)}
     </div>
     '''}
+  </div>
+
+  <div class="card">
+    <h2>Captain Suggestions <span class="subtitle">(form &times; fixture favourability)</span></h2>
+    {"<p>Not enough fixture data yet.</p>" if not captain_picks else "".join(
+        f'<div class="squad-row">{i+1}. {c["name"]} vs {c["opponent"] or "?"} '
+        f'({"H" if c["is_home"] else "A" if c["is_home"] is not None else "?"}, FDR {c["difficulty"] or "?"}) '
+        f'&mdash; form {c["form"]}, score <strong>{c["score"]}</strong></div>'
+        for i, c in enumerate(captain_picks)
+    )}
+  </div>
+
+  <div class="card">
+    <h2>Chip Timing <span class="subtitle">(double/blank gameweek detection)</span></h2>
+    <div class="squad-row">🎯 <strong>Triple Captain / Bench Boost:</strong> {chip_advice['triple_captain_bench_boost']}</div>
+    <div class="squad-row">🃏 <strong>Free Hit:</strong> {chip_advice['free_hit']}</div>
+    <div class="squad-row bench">Wildcard timing isn't scored here - that call depends on broader squad health and fixture swings, better discussed directly.</div>
   </div>
 
   <div class="card">

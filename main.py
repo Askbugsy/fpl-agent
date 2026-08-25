@@ -19,8 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from fpl_client import get_bootstrap_static, get_entry_picks
-from db import save_snapshot, save_squad_picks, get_movers, get_top_value
+from fpl_client import get_bootstrap_static, get_entry_picks, get_fixtures
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions
 from config import TEAM_ID
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -33,6 +33,11 @@ def main():
 
     snapshot_date = save_snapshot(players)
     print(f"Saved snapshot for {snapshot_date}\n")
+
+    save_teams(data["teams"])
+    fixtures = get_fixtures()
+    save_fixtures(fixtures)
+    print(f"Saved {len(fixtures)} fixtures with difficulty ratings.\n")
 
     # Work out the current gameweek from the bootstrap data
     current_gw = next((e["id"] for e in data["events"] if e["is_current"]), None)
@@ -64,6 +69,18 @@ def main():
     for p in get_top_value(limit=10):
         pos = POSITION_NAMES.get(p["position"], "?")
         print(f"  {p['name']:<20} {pos:<4} £{p['price']:<5} value={p['value_score']}")
+
+    print("\n=== Captain suggestions (form x fixture favourability) ===")
+    for c in get_captain_suggestions(limit=5):
+        venue = "H" if c["is_home"] else "A" if c["is_home"] is not None else "?"
+        opp = c["opponent"] or "?"
+        diff = c["difficulty"] or "?"
+        print(f"  {c['name']:<20} vs {opp} ({venue}, FDR {diff})  form={c['form']}  score={c['score']}")
+
+    print("\n=== Chip timing ===")
+    chips = get_chip_suggestions(TEAM_ID)
+    print(f"  Triple Captain / Bench Boost: {chips['triple_captain_bench_boost']}")
+    print(f"  Free Hit: {chips['free_hit']}")
 
 
 if __name__ == "__main__":
