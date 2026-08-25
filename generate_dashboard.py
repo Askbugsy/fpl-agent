@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation
 from config import TEAM_ID
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -53,6 +53,50 @@ def player_link(player_id: int, name: str) -> str:
     equivalent in JS - see the <script> block in build_html).
     """
     return f'<span class="player-link" onclick="openProfile({player_id})">{name}</span>'
+
+
+def render_formation_card(formation: dict) -> str:
+    if not formation.get("formation"):
+        return f'<p>{formation.get("reason", "Not enough data yet.")}</p>'
+
+    xi_by_pos = {1: [], 2: [], 3: [], 4: []}
+    for p in formation["starting_xi"]:
+        xi_by_pos[p["position"]].append(p)
+
+    def pitch_row(players, row_class=""):
+        cells = "".join(
+            f'<div class="pitch-player{" is-captain" if p["player_id"] == formation["suggested_captain"]["player_id"] else ""}">'
+            f'{player_link(p["player_id"], p["name"])}<br><span class="pitch-score">{p["score"]}{" (C)" if p["player_id"] == formation["suggested_captain"]["player_id"] else ""}</span>'
+            f'</div>'
+            for p in players
+        )
+        return f'<div class="pitch-row {row_class}">{cells}</div>'
+
+    comparison_rows = "".join(
+        f'<div class="formation-compare-row{" best" if c["formation"] == formation["formation"] else ""}">'
+        f'{c["formation"]} &mdash; {c["projected_total"]} pts</div>'
+        for c in formation["all_formations"]
+    )
+
+    bench_html = "".join(
+        f'<div class="squad-row bench">{player_link(p["player_id"], p["name"])} '
+        f'<span class="pos-tag">{POSITION_NAMES.get(p["position"], "?")}</span> &mdash; score {p["score"]}</div>'
+        for p in formation["bench"]
+    )
+
+    return f'''
+    <p><strong>Recommended: {formation["formation"]}</strong> &mdash; projected {formation["projected_total"]} pts,
+       captain <strong>{player_link(formation["suggested_captain"]["player_id"], formation["suggested_captain"]["name"])}</strong></p>
+    <div class="pitch">
+      {pitch_row(xi_by_pos[1])}
+      {pitch_row(xi_by_pos[2])}
+      {pitch_row(xi_by_pos[3])}
+      {pitch_row(xi_by_pos[4])}
+    </div>
+    <div class="formation-compare">{comparison_rows}</div>
+    <strong style="display:block;margin-top:12px;">Bench</strong>
+    {bench_html}
+    '''
 
 
 def render_transfer_suggestion(t: dict) -> str:
@@ -114,6 +158,7 @@ def build_html() -> str:
     squad_total = sum((r["gw_points"] or 0) * r["multiplier"] for r in starters)
 
     profiles = get_all_player_profiles()
+    formation = get_optimal_formation(TEAM_ID)
 
     movers_json = json.dumps(movers)
     value_json = json.dumps(value_picks)
@@ -161,11 +206,24 @@ def build_html() -> str:
   .modal-stats div {{ display: flex; justify-content: space-between; border-bottom: 1px solid #21262d; padding: 3px 0; }}
   .modal-gw-table {{ width: 100%; font-size: 0.8rem; margin-top: 10px; }}
   .modal-gw-table th, .modal-gw-table td {{ padding: 3px 6px; text-align: center; border-bottom: 1px solid #21262d; }}
+  .pitch {{ background: #1a3d1a; border-radius: 8px; padding: 12px 4px; margin: 12px 0; }}
+  .pitch-row {{ display: flex; justify-content: space-around; flex-wrap: wrap; margin: 8px 0; }}
+  .pitch-player {{ background: #21262d; border-radius: 6px; padding: 4px 8px; text-align: center; font-size: 0.75rem; min-width: 60px; }}
+  .pitch-player.is-captain {{ border: 1px solid #d29922; }}
+  .pitch-score {{ color: #8b949e; font-size: 0.7rem; }}
+  .formation-compare {{ margin-top: 12px; font-size: 0.8rem; }}
+  .formation-compare-row {{ padding: 3px 0; color: #8b949e; }}
+  .formation-compare-row.best {{ color: #3fb950; font-weight: bold; }}
 </style>
 </head>
 <body>
   <h1>⚽ FPL Agent Dashboard</h1>
   <div class="updated">Latest data: {latest_date}</div>
+
+  <div class="card">
+    <h2>Best Formation for Upcoming Fixtures</h2>
+    {render_formation_card(formation)}
+  </div>
 
   <div class="card">
     <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
