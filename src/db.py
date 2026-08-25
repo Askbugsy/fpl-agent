@@ -587,11 +587,18 @@ def get_optimal_formation(entry_id: int, min_minutes: int = 0) -> dict:
         xi_ids = {p["player_id"] for p in xi}
         bench = [p for p in projections if p["player_id"] not in xi_ids]
         bench.sort(key=lambda p: p["score"], reverse=True)
-        captain = max(xi, key=lambda p: p["score"])
+        # Vice-captain is the second-highest scorer in the XI, not the
+        # bench - FPL only lets the armband fall back to the vice if the
+        # captain doesn't register a score (didn't play, injured, etc.),
+        # and the vice has to already be a starter for that to happen.
+        xi_by_score = sorted(xi, key=lambda p: p["score"], reverse=True)
+        captain = xi_by_score[0]
+        vice_captain = xi_by_score[1] if len(xi_by_score) > 1 else None
 
         all_formations.append({
             "formation": label, "projected_total": total,
             "starting_xi": xi, "bench": bench, "suggested_captain": captain,
+            "suggested_vice_captain": vice_captain,
         })
 
     if not all_formations:

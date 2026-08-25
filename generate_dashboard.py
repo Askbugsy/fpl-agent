@@ -114,6 +114,14 @@ def render_formation_card(formation: dict) -> str:
     '''
 
 
+def captain_role_tag(i: int) -> str:
+    if i == 0:
+        return " <span class='best-tag'>Captain</span>"
+    if i == 1:
+        return " <span class='best-tag' style='background:#1f6feb'>Vice-Captain</span>"
+    return ""
+
+
 def render_transfer_suggestion(t: dict) -> str:
     urgency_colors = {"High": "#f85149", "Medium": "#d29922", "Low": "#8b949e"}
     color = urgency_colors.get(t["urgency"], "#8b949e")
@@ -145,6 +153,13 @@ def build_html() -> str:
     full_table, latest_date = get_latest_full_table()
     squad = get_latest_squad(TEAM_ID)
     captain_picks = get_captain_suggestions(TEAM_ID, limit=5)
+    vice_backup_note = ""
+    if len(captain_picks) >= 2:
+        vice_backup_note = (
+            '<div class="squad-row bench">If ' + captain_picks[0]["name"] +
+            " doesn't register a score (didn't play, injured, red-carded before kickoff), "
+            "the armband automatically passes to " + captain_picks[1]["name"] + ".</div>"
+        )
     chip_advice = get_chip_suggestions(TEAM_ID)
     transfer_suggestions = get_transfer_suggestions(TEAM_ID)
 
@@ -230,6 +245,7 @@ def build_html() -> str:
   .pitch-row {{ display: flex; justify-content: space-around; flex-wrap: wrap; margin: 8px 0; }}
   .pitch-player {{ background: #21262d; border-radius: 6px; padding: 6px 8px; text-align: center; font-size: 0.75rem; min-width: 64px; }}
   .pitch-player.is-captain {{ border: 1px solid #d29922; }}
+  .pitch-player.is-vice-captain {{ border: 1px dashed #58a6ff; }}
   .pitch-pic {{ width: 40px; height: 50px; object-fit: cover; border-radius: 4px; background: #30363d; display: block; margin: 0 auto 4px; }}
   .pitch-score {{ color: #8b949e; font-size: 0.7rem; }}
   .formation-compare {{ margin-top: 12px; font-size: 0.8rem; }}
@@ -287,11 +303,14 @@ def build_html() -> str:
 
     <h3>Captain Suggestions <span class="subtitle">(form &times; fixture favourability)</span></h3>
     {"<p>Not enough fixture data yet.</p>" if not captain_picks else "".join(
-        f'<div class="squad-row">{i+1}. {player_link(c["player_id"], c["name"])} vs {c["opponent"] or "?"} '
+        f'<div class="squad-row">{i+1}. {player_link(c["player_id"], c["name"])}'
+        f'{captain_role_tag(i)} '
+        f'vs {c["opponent"] or "?"} '
         f'({"H" if c["is_home"] else "A" if c["is_home"] is not None else "?"}, FDR {c["difficulty"] or "?"}) '
         f'&mdash; form {c["form"]}, score <strong>{c["score"]}</strong></div>'
         for i, c in enumerate(captain_picks)
     )}
+    {vice_backup_note}
 
     <h3>Chip Timing <span class="subtitle">(double/blank gameweek detection)</span></h3>
     <div class="squad-row">🎯 <strong>Triple Captain / Bench Boost:</strong> {chip_advice['triple_captain_bench_boost']}</div>
@@ -461,16 +480,20 @@ function pitchPhotoUrl(photoCode) {{
   return `${{PLAYER_PHOTO_BASE}}/110x140/${{photoCode}}.png`;
 }}
 
-function buildPitchHTML(xi, captainId) {{
+function buildPitchHTML(xi, captainId, viceCaptainId) {{
   const byPos = {{1: [], 2: [], 3: [], 4: []}};
   xi.forEach(p => byPos[p.position].push(p));
   return [1, 2, 3, 4].map(pos => {{
-    const cells = byPos[pos].map(p => `
-      <div class="pitch-player${{p.player_id === captainId ? ' is-captain' : ''}}">
+    const cells = byPos[pos].map(p => {{
+      const isCaptain = p.player_id === captainId;
+      const isVice = p.player_id === viceCaptainId;
+      return `
+      <div class="pitch-player${{isCaptain ? ' is-captain' : isVice ? ' is-vice-captain' : ''}}">
         <img class="pitch-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
         <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span><br>
-        <span class="pitch-score">${{p.score}}${{p.player_id === captainId ? ' (C)' : ''}}</span>
-      </div>`).join('');
+        <span class="pitch-score">${{p.score}}${{isCaptain ? ' (C)' : isVice ? ' (VC)' : ''}}</span>
+      </div>`;
+    }}).join('');
     return `<div class="pitch-row">${{cells}}</div>`;
   }}).join('');
 }}
@@ -489,10 +512,13 @@ function selectFormation(label) {{
   if (!f) return;
 
   const isBest = label === bestFormationLabel;
+  const viceHTML = f.suggested_vice_captain
+    ? ` &mdash; vice-captain <strong><span class="player-link" onclick="openProfile(${{f.suggested_vice_captain.player_id}})">${{f.suggested_vice_captain.name}}</span></strong> (steps up if the captain doesn't register a score)`
+    : '';
   document.getElementById('formationSummary').innerHTML =
     `<strong>${{isBest ? 'Recommended' : 'Selected'}}: ${{f.formation}}</strong> &mdash; projected ${{f.projected_total}} pts, ` +
-    `captain <strong><span class="player-link" onclick="openProfile(${{f.suggested_captain.player_id}})">${{f.suggested_captain.name}}</span></strong>`;
-  document.getElementById('formationPitch').innerHTML = buildPitchHTML(f.starting_xi, f.suggested_captain.player_id);
+    `captain <strong><span class="player-link" onclick="openProfile(${{f.suggested_captain.player_id}})">${{f.suggested_captain.name}}</span></strong>${{viceHTML}}`;
+  document.getElementById('formationPitch').innerHTML = buildPitchHTML(f.starting_xi, f.suggested_captain.player_id, f.suggested_vice_captain ? f.suggested_vice_captain.player_id : null);
   document.getElementById('formationBench').innerHTML = buildBenchHTML(f.bench);
 
   document.querySelectorAll('.formation-compare-row').forEach(el => {{
