@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles
 from config import TEAM_ID
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -34,15 +34,25 @@ def get_latest_full_table() -> list[dict]:
     conn.row_factory = None
     latest_date = conn.execute("SELECT MAX(snapshot_date) FROM player_snapshots").fetchone()[0]
     rows = conn.execute(
-        """SELECT name, team, position, price, total_points, form,
+        """SELECT player_id, name, team, position, price, total_points, form,
                   points_per_game, selected_by_percent
            FROM player_snapshots WHERE snapshot_date = ?
            ORDER BY total_points DESC""",
         (latest_date,),
     ).fetchall()
     conn.close()
-    cols = ["name", "team", "position", "price", "total_points", "form", "points_per_game", "selected_by_percent"]
+    cols = ["player_id", "name", "team", "position", "price", "total_points", "form", "points_per_game", "selected_by_percent"]
     return [dict(zip(cols, r)) for r in rows], latest_date
+
+
+def player_link(player_id: int, name: str) -> str:
+    """
+    Wraps a player's name in a clickable span that opens the shared
+    profile popup. Used everywhere a name appears server-side (the
+    client-side table renderer and chart click handlers do the
+    equivalent in JS - see the <script> block in build_html).
+    """
+    return f'<span class="player-link" onclick="openProfile({player_id})">{name}</span>'
 
 
 def render_transfer_suggestion(t: dict) -> str:
@@ -56,7 +66,7 @@ def render_transfer_suggestion(t: dict) -> str:
     reason_text = ", ".join(reasons)
 
     candidates_html = "".join(
-        f'<div class="candidate-row">&rarr; {c["name"]} £{c["price"]}m '
+        f'<div class="candidate-row">&rarr; {player_link(c["player_id"], c["name"])} £{c["price"]}m '
         f'(form {c["form"]}, value {c["value_score"]})</div>'
         for c in t["candidates"]
     ) or '<div class="candidate-row">No affordable replacement found in this position.</div>'
@@ -64,7 +74,7 @@ def render_transfer_suggestion(t: dict) -> str:
     return f'''
     <div class="transfer-card">
       <span class="urgency-badge" style="background:{color}">{t["urgency"]}</span>
-      <strong>{t["name"]}</strong> ({POSITION_NAMES.get(t["position"], "?")}) &mdash; {reason_text}
+      <strong>{player_link(t["player_id"], t["name"])}</strong> ({POSITION_NAMES.get(t["position"], "?")}) &mdash; {reason_text}
       <div class="budget-line">Budget if sold: £{t["budget_available"]}m</div>
       {candidates_html}
     </div>'''
@@ -80,7 +90,7 @@ def render_squad_row(r: dict, is_bench: bool = False) -> str:
     return (
         f'<div class="squad-row{bench_class}">'
         f'<img class="player-pic" src="{photo_url}" onerror="this.style.display=\'none\'" alt="">'
-        f'{r["name"]} <span class="pos-tag">{r["position"]}</span>{tag} &mdash; {points} pts'
+        f'{player_link(r["player_id"], r["name"])} <span class="pos-tag">{r["position"]}</span>{tag} &mdash; {points} pts'
         f'</div>'
     )
 
@@ -103,9 +113,12 @@ def build_html() -> str:
     bench = [r for r in squad if r["multiplier"] == 0]
     squad_total = sum((r["gw_points"] or 0) * r["multiplier"] for r in starters)
 
+    profiles = get_all_player_profiles()
+
     movers_json = json.dumps(movers)
     value_json = json.dumps(value_picks)
     table_json = json.dumps(full_table)
+    profiles_json = json.dumps(profiles)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -134,6 +147,20 @@ def build_html() -> str:
   .urgency-badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: bold; color: #0d1117; margin-right: 6px; }}
   .budget-line {{ color: #8b949e; font-size: 0.8rem; margin: 4px 0; }}
   .candidate-row {{ font-size: 0.85rem; color: #58a6ff; padding-left: 6px; }}
+  .player-link {{ color: #e6edf3; text-decoration: underline dotted #58a6ff; cursor: pointer; }}
+  .player-link:hover {{ color: #58a6ff; }}
+  #profileModal {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100;
+                    align-items: center; justify-content: center; padding: 16px; }}
+  #profileModal.open {{ display: flex; }}
+  .modal-content {{ background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+                     padding: 20px; max-width: 400px; width: 100%; max-height: 80vh; overflow-y: auto; }}
+  .modal-header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }}
+  .modal-header img {{ width: 56px; height: 70px; object-fit: cover; border-radius: 6px; background: #21262d; }}
+  .modal-close {{ float: right; cursor: pointer; color: #8b949e; font-size: 1.2rem; }}
+  .modal-stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 0.85rem; margin: 12px 0; }}
+  .modal-stats div {{ display: flex; justify-content: space-between; border-bottom: 1px solid #21262d; padding: 3px 0; }}
+  .modal-gw-table {{ width: 100%; font-size: 0.8rem; margin-top: 10px; }}
+  .modal-gw-table th, .modal-gw-table td {{ padding: 3px 6px; text-align: center; border-bottom: 1px solid #21262d; }}
 </style>
 </head>
 <body>
@@ -153,7 +180,7 @@ def build_html() -> str:
   <div class="card">
     <h2>Captain Suggestions <span class="subtitle">(form &times; fixture favourability)</span></h2>
     {"<p>Not enough fixture data yet.</p>" if not captain_picks else "".join(
-        f'<div class="squad-row">{i+1}. {c["name"]} vs {c["opponent"] or "?"} '
+        f'<div class="squad-row">{i+1}. {player_link(c["player_id"], c["name"])} vs {c["opponent"] or "?"} '
         f'({"H" if c["is_home"] else "A" if c["is_home"] is not None else "?"}, FDR {c["difficulty"] or "?"}) '
         f'&mdash; form {c["form"]}, score <strong>{c["score"]}</strong></div>'
         for i, c in enumerate(captain_picks)
@@ -202,10 +229,18 @@ def build_html() -> str:
     </div>
   </div>
 
+  <div id="profileModal" onclick="if(event.target===this) closeProfile()">
+    <div class="modal-content">
+      <span class="modal-close" onclick="closeProfile()">&times;</span>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
 <script>
 const movers = {movers_json};
 const valuePicks = {value_json};
 const fullTable = {table_json};
+const playerProfiles = {profiles_json};
 
 new Chart(document.getElementById('moversChart'), {{
   type: 'bar',
@@ -217,7 +252,10 @@ new Chart(document.getElementById('moversChart'), {{
       backgroundColor: movers.map(m => m.form_change >= 0 ? '#3fb950' : '#f85149'),
     }}]
   }},
-  options: {{ indexAxis: 'y', plugins: {{ legend: {{ display: false }} }} }}
+  options: {{
+    indexAxis: 'y', plugins: {{ legend: {{ display: false }} }},
+    onClick: (evt, elements) => {{ if (elements.length) openProfile(movers[elements[0].index].player_id); }}
+  }}
 }});
 
 new Chart(document.getElementById('valueChart'), {{
@@ -230,14 +268,18 @@ new Chart(document.getElementById('valueChart'), {{
       backgroundColor: '#58a6ff',
     }}]
   }},
-  options: {{ indexAxis: 'y', plugins: {{ legend: {{ display: false }} }} }}
+  options: {{
+    indexAxis: 'y', plugins: {{ legend: {{ display: false }} }},
+    onClick: (evt, elements) => {{ if (elements.length) openProfile(valuePicks[elements[0].index].player_id); }}
+  }}
 }});
 
 const tbody = document.getElementById('tableBody');
 function renderTable(rows) {{
   tbody.innerHTML = rows.map(r => `
     <tr>
-      <td>${{r.name}}</td><td>${{r.position}}</td><td>£${{r.price}}m</td>
+      <td><span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span></td>
+      <td>${{r.position}}</td><td>£${{r.price}}m</td>
       <td>${{r.total_points}}</td><td>${{r.form}}</td>
       <td>${{r.points_per_game}}</td><td>${{r.selected_by_percent}}%</td>
     </tr>`).join('');
@@ -253,6 +295,44 @@ function sortTable(colIndex) {{
     sortDir[key] ? (a[key] > b[key] ? 1 : -1) : (a[key] < b[key] ? 1 : -1)
   );
   renderTable(sorted);
+}}
+
+const POS_NAMES = {{1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}};
+
+function openProfile(playerId) {{
+  const p = playerProfiles[playerId];
+  if (!p) return;  // no profile data for this id - fail quietly rather than break the page
+
+  const photoUrl = `https://resources.premierleague.com/premierleague/photos/players/250x250/p${{p.photo_code}}.png`;
+  let gwRows = '';
+  if (p.gw_history && p.gw_history.length) {{
+    gwRows = `<table class="modal-gw-table"><thead><tr><th>GW</th><th>Pts</th><th>Min</th><th>G</th><th>A</th></tr></thead><tbody>` +
+      p.gw_history.map(h => `<tr><td>${{h.gameweek}}</td><td>${{h.total_points}}</td><td>${{h.minutes}}</td><td>${{h.goals_scored}}</td><td>${{h.assists}}</td></tr>`).join('') +
+      `</tbody></table>`;
+  }} else {{
+    gwRows = `<p style="color:#8b949e;font-size:0.85rem;">Gameweek-by-gameweek history not available yet - run the historical backfill to populate this.</p>`;
+  }}
+
+  document.getElementById('modalBody').innerHTML = `
+    <div class="modal-header">
+      <img src="${{photoUrl}}" onerror="this.style.display='none'" alt="">
+      <div><strong>${{p.name}}</strong><br><span style="color:#8b949e">${{p.team || ''}} &middot; ${{POS_NAMES[p.position] || '?'}}</span></div>
+    </div>
+    <div class="modal-stats">
+      <div><span>Price</span><span>£${{p.price}}m</span></div>
+      <div><span>Total points</span><span>${{p.total_points}}</span></div>
+      <div><span>Form</span><span>${{p.form}}</span></div>
+      <div><span>Points/game</span><span>${{p.points_per_game}}</span></div>
+      <div><span>Minutes</span><span>${{p.minutes}}</span></div>
+      <div><span>Selected by</span><span>${{p.selected_by_percent}}%</span></div>
+    </div>
+    ${{gwRows}}
+  `;
+  document.getElementById('profileModal').classList.add('open');
+}}
+
+function closeProfile() {{
+  document.getElementById('profileModal').classList.remove('open');
 }}
 </script>
 </body>
