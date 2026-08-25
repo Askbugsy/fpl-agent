@@ -201,8 +201,9 @@ def build_html() -> str:
   .modal-gw-table th, .modal-gw-table td {{ padding: 3px 6px; text-align: center; border-bottom: 1px solid #21262d; }}
   .pitch {{ background: #1a3d1a; border-radius: 8px; padding: 12px 4px; margin: 12px 0; }}
   .pitch-row {{ display: flex; justify-content: space-around; flex-wrap: wrap; margin: 8px 0; }}
-  .pitch-player {{ background: #21262d; border-radius: 6px; padding: 4px 8px; text-align: center; font-size: 0.75rem; min-width: 60px; }}
+  .pitch-player {{ background: #21262d; border-radius: 6px; padding: 6px 8px; text-align: center; font-size: 0.75rem; min-width: 64px; }}
   .pitch-player.is-captain {{ border: 1px solid #d29922; }}
+  .pitch-pic {{ width: 40px; height: 50px; object-fit: cover; border-radius: 4px; background: #30363d; display: block; margin: 0 auto 4px; }}
   .pitch-score {{ color: #8b949e; font-size: 0.7rem; }}
   .formation-compare {{ margin-top: 12px; font-size: 0.8rem; }}
   .formation-compare-row {{ padding: 5px 8px; color: #8b949e; cursor: pointer; border-radius: 4px; border: 1px solid transparent; }}
@@ -391,12 +392,17 @@ function closeProfile() {{
   document.getElementById('profileModal').classList.remove('open');
 }}
 
+function pitchPhotoUrl(photoCode) {{
+  return `https://resources.premierleague.com/premierleague/photos/players/110x140/p${{photoCode}}.png`;
+}}
+
 function buildPitchHTML(xi, captainId) {{
   const byPos = {{1: [], 2: [], 3: [], 4: []}};
   xi.forEach(p => byPos[p.position].push(p));
   return [1, 2, 3, 4].map(pos => {{
     const cells = byPos[pos].map(p => `
       <div class="pitch-player${{p.player_id === captainId ? ' is-captain' : ''}}">
+        <img class="pitch-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="this.style.display='none'" alt="">
         <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span><br>
         <span class="pitch-score">${{p.score}}${{p.player_id === captainId ? ' (C)' : ''}}</span>
       </div>`).join('');
@@ -407,6 +413,7 @@ function buildPitchHTML(xi, captainId) {{
 function buildBenchHTML(bench) {{
   return bench.map(p => `
     <div class="squad-row bench">
+      <img class="player-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="this.style.display='none'" alt="">
       <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span>
       <span class="pos-tag">${{POS_NAMES[p.position] || '?'}}</span> &mdash; score ${{p.score}}
     </div>`).join('');
