@@ -228,13 +228,27 @@ def save_squad_picks(entry_id: int, gameweek: int, picks_data: dict, player_poin
     conn.close()
 
 
-def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict) -> None:
+def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict, live_summary: dict | None = None) -> None:
     """
-    Saves bank/team value/rank for this gameweek. All of this comes
-    from the same picks API call we already make - 'rank' (your
-    position for this specific gameweek) was sitting in the response
-    unused until now.
+    Saves bank/team value/points/rank for this gameweek. bank/value/
+    points come from the picks API's entry_history block. Rank is a
+    different story: entry_history's 'rank'/'overall_rank' are frozen
+    at the moment that gameweek was scored and don't track the
+    standings afterward - confirmed by these staying byte-identical
+    across separate runs while the FPL app showed a different overall
+    rank. live_summary (from fpl_client.get_entry_summary, the same
+    endpoint the app itself reads) has 'summary_event_rank' and
+    'summary_overall_rank', which do keep moving - prefer those when
+    available, falling back to entry_history's frozen values only if
+    the live call wasn't made.
     """
+    if live_summary:
+        gw_rank = live_summary.get("summary_event_rank")
+        overall_rank = live_summary.get("summary_overall_rank")
+    else:
+        gw_rank = entry_history.get("rank")
+        overall_rank = entry_history.get("overall_rank")
+
     conn = get_connection()
     conn.execute(
         """INSERT OR REPLACE INTO entry_summary
@@ -245,8 +259,8 @@ def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict) -> Non
             entry_history.get("bank", 0) / 10,
             entry_history.get("value", 0) / 10,
             entry_history.get("points"),
-            entry_history.get("rank"),
-            entry_history.get("overall_rank"),
+            gw_rank,
+            overall_rank,
         ),
     )
     conn.commit()
