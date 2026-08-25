@@ -51,7 +51,19 @@ CREATE TABLE IF NOT EXISTS squad_picks (
     is_captain INTEGER NOT NULL,
     is_vice_captain INTEGER NOT NULL,
     gw_points INTEGER,                 -- points that player scored this gameweek
+    selling_price REAL,                -- what you'd actually get if sold now (post sell-on tax)
+    purchase_price REAL,               -- what you paid
     PRIMARY KEY (entry_id, gameweek, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS entry_summary (
+    entry_id INTEGER NOT NULL,
+    gameweek INTEGER NOT NULL,
+    bank REAL,              -- money in the bank, in £m
+    team_value REAL,        -- total squad value, in £m
+    gw_points INTEGER,
+    overall_rank INTEGER,
+    PRIMARY KEY (entry_id, gameweek)
 );
 
 CREATE TABLE IF NOT EXISTS player_gw_history (
@@ -96,6 +108,8 @@ def get_connection() -> sqlite3.Connection:
     for stmt in (
         "ALTER TABLE player_snapshots ADD COLUMN photo_code INTEGER",
         "ALTER TABLE teams ADD COLUMN team_code INTEGER",
+        "ALTER TABLE squad_picks ADD COLUMN selling_price REAL",
+        "ALTER TABLE squad_picks ADD COLUMN purchase_price REAL",
     ):
         try:
             conn.execute(stmt)
@@ -178,6 +192,10 @@ def save_squad_picks(entry_id: int, gameweek: int, picks_data: dict, player_poin
     player_points maps player_id -> points scored that gameweek,
     looked up from the current player_snapshots data so we don't
     need a second API call just for points.
+
+    Also saves each player's selling_price and purchase_price,
+    straight from the API - FPL already calculates the sell-on tax
+    for us, so we don't need to reimplement that rule ourselves.
     """
     conn = get_connection()
     rows = [
@@ -185,15 +203,36 @@ def save_squad_picks(entry_id: int, gameweek: int, picks_data: dict, player_poin
             entry_id, gameweek, p["element"], p["position"], p["multiplier"],
             int(p["is_captain"]), int(p["is_vice_captain"]),
             player_points.get(p["element"]),
+            p.get("selling_price", 0) / 10 if p.get("selling_price") else None,
+            p.get("purchase_price", 0) / 10 if p.get("purchase_price") else None,
         )
         for p in picks_data["picks"]
     ]
     conn.executemany(
         """INSERT OR REPLACE INTO squad_picks
            (entry_id, gameweek, player_id, squad_position, multiplier,
-            is_captain, is_vice_captain, gw_points)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            is_captain, is_vice_captain, gw_points, selling_price, purchase_price)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict) -> None:
+    """Saves bank/team value for this gameweek, from the same picks API call."""
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO entry_summary
+           (entry_id, gameweek, bank, team_value, gw_points, overall_rank)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            entry_id, gameweek,
+            entry_history.get("bank", 0) / 10,
+            entry_history.get("value", 0) / 10,
+            entry_history.get("points"),
+            entry_history.get("overall_rank"),
+        ),
     )
     conn.commit()
     conn.close()
@@ -276,21 +315,15 @@ def save_fixtures(fixtures: list[dict]) -> None:
     conn.close()
 
 
-def get_captain_suggestions(limit: int = 5, min_minutes: int = 60) -> list[dict]:
+def get_captain_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60) -> list[dict]:
     """
-    A transparent, formula-based captain suggestion - not magic,
-    just: recent form, weighted by how favourable the player's next
-    fixture is (FPL's own 1-5 difficulty rating, lower = easier).
+    Captain suggestion, restricted to your CURRENT STARTING XI only -
+    not the full player pool. You can only captain someone who's
+    actually in your squad and starting, so that's the only pool
+    that makes sense here.
 
-    score = form * (6 - difficulty) / 5
-
-    Easy fixture (difficulty 1) -> multiplier 1.0
-    Hard fixture (difficulty 5) -> multiplier 0.2
-    No fixture data yet -> falls back to form alone (multiplier 1.0)
-
-    This is a simple, adjustable formula, not a prediction model -
-    the point is transparency: you can see exactly why a player is
-    ranked where they are, and tune the weighting yourself later.
+    score = form * (6 - difficulty) / 5   (see get_captain_suggestions
+    docstring below for the fixture-weighting logic - unchanged)
     """
     conn = get_connection()
     conn.row_factory = sqlite3.Row
@@ -298,12 +331,21 @@ def get_captain_suggestions(limit: int = 5, min_minutes: int = 60) -> list[dict]
     latest_date = conn.execute(
         "SELECT MAX(snapshot_date) AS d FROM player_snapshots"
     ).fetchone()["d"]
+    latest_gw = conn.execute(
+        "SELECT MAX(gameweek) AS gw FROM squad_picks WHERE entry_id = ?", (entry_id,)
+    ).fetchone()["gw"]
+
+    if latest_gw is None:
+        conn.close()
+        return []
 
     players = conn.execute(
-        """SELECT player_id, name, team, position, form, price
-           FROM player_snapshots
-           WHERE snapshot_date = ? AND minutes >= ?""",
-        (latest_date, min_minutes),
+        """SELECT ps.player_id, ps.name, ps.team, ps.position, ps.form, ps.price
+           FROM squad_picks sp
+           JOIN player_snapshots ps ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
+           WHERE sp.entry_id = ? AND sp.gameweek = ? AND sp.multiplier > 0
+             AND ps.minutes >= ?""",
+        (latest_date, entry_id, latest_gw, min_minutes),
     ).fetchall()
 
     results = []
@@ -446,6 +488,101 @@ def get_chip_suggestions(entry_id: int) -> dict:
         free_hit = "No blank gameweeks detected yet for your squad's teams."
 
     return {"triple_captain_bench_boost": triple_captain, "free_hit": free_hit}
+
+
+def get_transfer_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60) -> list[dict]:
+    """
+    Flags squad players worth considering transferring out, based on
+    two objective signals compared to the previous snapshot:
+
+      - Falling price (a strong community signal others are selling)
+      - Falling form (recent performance trending down)
+
+    urgency_score = (form drop x 2) + (price drop x 10)
+    Price drop is weighted heavily since a falling price is a costly,
+    hard-to-reverse signal - once it falls, that value is gone.
+
+    Tiers: score >= 5 -> High, >= 2 -> Medium, > 0 -> Low.
+    Players with neither signal aren't flagged at all.
+
+    For each flagged player, suggests up to 3 replacement candidates
+    in the same position that you could genuinely afford - selling
+    price (post sell-on tax, from the real API data) plus your
+    current bank, so suggestions respect the actual £100m constraint.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    dates = conn.execute(
+        "SELECT DISTINCT snapshot_date FROM player_snapshots ORDER BY snapshot_date DESC LIMIT 2"
+    ).fetchall()
+    if len(dates) < 2:
+        conn.close()
+        return []  # need at least 2 snapshots to detect a trend
+    latest_date, previous_date = dates[0]["snapshot_date"], dates[1]["snapshot_date"]
+
+    latest_gw = conn.execute(
+        "SELECT MAX(gameweek) AS gw FROM squad_picks WHERE entry_id = ?", (entry_id,)
+    ).fetchone()["gw"]
+    if latest_gw is None:
+        conn.close()
+        return []
+
+    bank_row = conn.execute(
+        "SELECT bank FROM entry_summary WHERE entry_id = ? AND gameweek = ?",
+        (entry_id, latest_gw),
+    ).fetchone()
+    bank = bank_row["bank"] if bank_row else 0.0
+
+    squad = conn.execute(
+        """SELECT sp.player_id, sp.selling_price, cur.name, cur.position, cur.team,
+                  cur.form AS current_form, cur.price AS current_price
+           FROM squad_picks sp
+           JOIN player_snapshots cur ON sp.player_id = cur.player_id AND cur.snapshot_date = ?
+           WHERE sp.entry_id = ? AND sp.gameweek = ?""",
+        (latest_date, entry_id, latest_gw),
+    ).fetchall()
+    squad_ids = [s["player_id"] for s in squad]
+
+    flagged = []
+    for s in squad:
+        prev = conn.execute(
+            "SELECT form, price FROM player_snapshots WHERE player_id = ? AND snapshot_date = ?",
+            (s["player_id"], previous_date),
+        ).fetchone()
+        if not prev:
+            continue
+
+        form_drop = max(0.0, prev["form"] - s["current_form"])
+        price_drop = max(0.0, prev["price"] - s["current_price"])
+        urgency_score = round(form_drop * 2 + price_drop * 10, 1)
+        if urgency_score <= 0:
+            continue
+
+        tier = "High" if urgency_score >= 5 else "Medium" if urgency_score >= 2 else "Low"
+        budget = round((s["selling_price"] or s["current_price"]) + bank, 1)
+
+        placeholders = ",".join("?" * len(squad_ids))
+        candidates = conn.execute(
+            f"""SELECT name, price, form, points_per_game,
+                       ROUND(points_per_game / price, 3) AS value_score
+                FROM player_snapshots
+                WHERE snapshot_date = ? AND position = ? AND minutes >= ?
+                  AND price <= ? AND player_id NOT IN ({placeholders})
+                ORDER BY value_score DESC LIMIT 3""",
+            [latest_date, s["position"], min_minutes, budget] + squad_ids,
+        ).fetchall()
+
+        flagged.append({
+            "name": s["name"], "position": s["position"], "urgency": tier,
+            "urgency_score": urgency_score, "form_drop": round(form_drop, 1),
+            "price_drop": round(price_drop, 1), "budget_available": budget,
+            "candidates": [dict(c) for c in candidates],
+        })
+
+    conn.close()
+    flagged.sort(key=lambda f: f["urgency_score"], reverse=True)
+    return flagged[:limit]
 
 
 def get_top_value(position: int | None = None, min_minutes: int = 90, limit: int = 10) -> list[dict]:

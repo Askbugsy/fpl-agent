@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions
 from config import TEAM_ID
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -45,6 +45,31 @@ def get_latest_full_table() -> list[dict]:
     return [dict(zip(cols, r)) for r in rows], latest_date
 
 
+def render_transfer_suggestion(t: dict) -> str:
+    urgency_colors = {"High": "#f85149", "Medium": "#d29922", "Low": "#8b949e"}
+    color = urgency_colors.get(t["urgency"], "#8b949e")
+    reasons = []
+    if t["form_drop"]:
+        reasons.append(f"form -{t['form_drop']}")
+    if t["price_drop"]:
+        reasons.append(f"price -£{t['price_drop']}m")
+    reason_text = ", ".join(reasons)
+
+    candidates_html = "".join(
+        f'<div class="candidate-row">&rarr; {c["name"]} £{c["price"]}m '
+        f'(form {c["form"]}, value {c["value_score"]})</div>'
+        for c in t["candidates"]
+    ) or '<div class="candidate-row">No affordable replacement found in this position.</div>'
+
+    return f'''
+    <div class="transfer-card">
+      <span class="urgency-badge" style="background:{color}">{t["urgency"]}</span>
+      <strong>{t["name"]}</strong> ({POSITION_NAMES.get(t["position"], "?")}) &mdash; {reason_text}
+      <div class="budget-line">Budget if sold: £{t["budget_available"]}m</div>
+      {candidates_html}
+    </div>'''
+
+
 def render_squad_row(r: dict, is_bench: bool = False) -> str:
     """Builds one squad-row div. A plain function instead of a giant
     inline f-string, so quote-escaping doesn't turn into a mess."""
@@ -65,8 +90,9 @@ def build_html() -> str:
     value_picks = get_top_value(limit=10)
     full_table, latest_date = get_latest_full_table()
     squad = get_latest_squad(TEAM_ID)
-    captain_picks = get_captain_suggestions(limit=5)
+    captain_picks = get_captain_suggestions(TEAM_ID, limit=5)
     chip_advice = get_chip_suggestions(TEAM_ID)
+    transfer_suggestions = get_transfer_suggestions(TEAM_ID)
 
     for row in full_table:
         row["position"] = POSITION_NAMES.get(row["position"], "?")
@@ -104,6 +130,10 @@ def build_html() -> str:
   .pos-tag {{ color: #58a6ff; font-size: 0.75rem; }}
   .squad-list strong {{ display: block; margin: 10px 0 4px; }}
   .subtitle {{ color: #8b949e; font-size: 0.75rem; font-weight: normal; }}
+  .transfer-card {{ border: 1px solid #30363d; border-radius: 6px; padding: 10px; margin-bottom: 10px; font-size: 0.9rem; }}
+  .urgency-badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: bold; color: #0d1117; margin-right: 6px; }}
+  .budget-line {{ color: #8b949e; font-size: 0.8rem; margin: 4px 0; }}
+  .candidate-row {{ font-size: 0.85rem; color: #58a6ff; padding-left: 6px; }}
 </style>
 </head>
 <body>
@@ -135,6 +165,11 @@ def build_html() -> str:
     <div class="squad-row">🎯 <strong>Triple Captain / Bench Boost:</strong> {chip_advice['triple_captain_bench_boost']}</div>
     <div class="squad-row">🃏 <strong>Free Hit:</strong> {chip_advice['free_hit']}</div>
     <div class="squad-row bench">Wildcard timing isn't scored here - that call depends on broader squad health and fixture swings, better discussed directly.</div>
+  </div>
+
+  <div class="card">
+    <h2>Transfer Suggestions <span class="subtitle">(form + price trend, budget-aware)</span></h2>
+    {"<p>No players flagged - either everything's stable, or only one snapshot exists so far (trends need two).</p>" if not transfer_suggestions else "".join(render_transfer_suggestion(t) for t in transfer_suggestions)}
   </div>
 
   <div class="card">
