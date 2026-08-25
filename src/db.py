@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS player_snapshots (
     points_per_game REAL NOT NULL,
     minutes INTEGER NOT NULL,
     selected_by_percent REAL NOT NULL,
+    photo_code INTEGER,
     PRIMARY KEY (player_id, snapshot_date)
 );
 
@@ -68,7 +69,8 @@ CREATE TABLE IF NOT EXISTS player_gw_history (
 CREATE TABLE IF NOT EXISTS teams (
     team_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
-    short_name TEXT NOT NULL
+    short_name TEXT NOT NULL,
+    team_code INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS fixtures (
@@ -88,6 +90,17 @@ def get_connection() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
+    # Migration guard: if this DB was created before photo_code/team_code
+    # existed, add them now rather than failing. Safe to run every time -
+    # SQLite just errors (harmlessly, caught below) if the column's already there.
+    for stmt in (
+        "ALTER TABLE player_snapshots ADD COLUMN photo_code INTEGER",
+        "ALTER TABLE teams ADD COLUMN team_code INTEGER",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     return conn
 
 
@@ -104,6 +117,7 @@ def save_snapshot(players: list[dict]) -> str:
             p["id"], today, p["web_name"], p["team"], p["element_type"],
             p["now_cost"] / 10, p["total_points"], float(p["form"]),
             float(p["points_per_game"]), p["minutes"], float(p["selected_by_percent"]),
+            p["code"],
         )
         for p in players
     ]
@@ -111,8 +125,9 @@ def save_snapshot(players: list[dict]) -> str:
     conn.executemany(
         """INSERT OR REPLACE INTO player_snapshots
            (player_id, snapshot_date, name, team, position, price,
-            total_points, form, points_per_game, minutes, selected_by_percent)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            total_points, form, points_per_game, minutes, selected_by_percent,
+            photo_code)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -208,7 +223,7 @@ def get_latest_squad(entry_id: int) -> list[dict]:
         """
         SELECT sp.squad_position, sp.multiplier, sp.is_captain,
                sp.is_vice_captain, sp.gw_points,
-               ps.name, ps.position, ps.price
+               ps.name, ps.position, ps.price, ps.photo_code
         FROM squad_picks sp
         JOIN player_snapshots ps
           ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
@@ -225,9 +240,9 @@ def get_latest_squad(entry_id: int) -> list[dict]:
 def save_teams(teams: list[dict]) -> None:
     """Saves the current team ID -> name mapping, used for readable output."""
     conn = get_connection()
-    rows = [(t["id"], t["name"], t["short_name"]) for t in teams]
+    rows = [(t["id"], t["name"], t["short_name"], t["code"]) for t in teams]
     conn.executemany(
-        "INSERT OR REPLACE INTO teams (team_id, name, short_name) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO teams (team_id, name, short_name, team_code) VALUES (?, ?, ?, ?)",
         rows,
     )
     conn.commit()

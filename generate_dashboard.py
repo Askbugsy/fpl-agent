@@ -45,6 +45,21 @@ def get_latest_full_table() -> list[dict]:
     return [dict(zip(cols, r)) for r in rows], latest_date
 
 
+def render_squad_row(r: dict, is_bench: bool = False) -> str:
+    """Builds one squad-row div. A plain function instead of a giant
+    inline f-string, so quote-escaping doesn't turn into a mess."""
+    photo_url = f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{r['photo_code']}.png"
+    tag = " (C)" if r.get("is_captain") else " (V)" if r.get("is_vice_captain") else ""
+    points = (r["gw_points"] or 0) * r["multiplier"] if not is_bench else (r["gw_points"] or 0)
+    bench_class = " bench" if is_bench else ""
+    return (
+        f'<div class="squad-row{bench_class}">'
+        f'<img class="player-pic" src="{photo_url}" onerror="this.style.display=\'none\'" alt="">'
+        f'{r["name"]} <span class="pos-tag">{r["position"]}</span>{tag} &mdash; {points} pts'
+        f'</div>'
+    )
+
+
 def build_html() -> str:
     movers = get_movers(limit=10)
     value_picks = get_top_value(limit=10)
@@ -83,7 +98,8 @@ def build_html() -> str:
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #30363d; }}
   th {{ cursor: pointer; color: #58a6ff; position: sticky; top: 0; background: #161b22; }}
   .scroll {{ max-height: 400px; overflow-y: auto; }}
-  .squad-row {{ padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 0.9rem; }}
+  .squad-row {{ padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 0.9rem; display: flex; align-items: center; gap: 8px; }}
+  .player-pic {{ width: 32px; height: 40px; object-fit: cover; border-radius: 4px; background: #21262d; flex-shrink: 0; }}
   .squad-row.bench {{ color: #8b949e; }}
   .pos-tag {{ color: #58a6ff; font-size: 0.75rem; }}
   .squad-list strong {{ display: block; margin: 10px 0 4px; }}
@@ -96,14 +112,12 @@ def build_html() -> str:
 
   <div class="card">
     <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
-    {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else f'''
-    <div class="squad-list">
-      <strong>Starting XI</strong>
-      {"".join(f'<div class="squad-row">{r["name"]} <span class="pos-tag">{r["position"]}</span>{" (C)" if r["is_captain"] else " (V)" if r["is_vice_captain"] else ""} &mdash; {(r["gw_points"] or 0) * r["multiplier"]} pts</div>' for r in starters)}
-      <strong>Bench</strong>
-      {"".join(f'<div class="squad-row bench">{r["name"]} <span class="pos-tag">{r["position"]}</span> &mdash; {r["gw_points"] or 0} pts</div>' for r in bench)}
-    </div>
-    '''}
+    {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else
+     "<div class='squad-list'><strong>Starting XI</strong>" +
+     "".join(render_squad_row(r) for r in starters) +
+     "<strong>Bench</strong>" +
+     "".join(render_squad_row(r, is_bench=True) for r in bench) +
+     "</div>"}
   </div>
 
   <div class="card">
