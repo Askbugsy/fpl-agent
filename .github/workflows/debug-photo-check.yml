@@ -1,0 +1,28 @@
+name: Debug - Photo CDN size check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Konsa's photo against old vs current CDN URL patterns
+        run: |
+          # Konsa - code 199798.
+          echo "-- Old/deprecated pattern (premierleague, p-prefixed) --"
+          for url in \
+            "https://resources.premierleague.com/premierleague/photos/players/110x140/p199798.png" \
+            "https://resources.premierleague.com/premierleague/photos/players/250x250/p199798.png"; do
+            code=$(curl -s -o /tmp/out.png -w "%{http_code}" "$url")
+            size=$(stat -c%s /tmp/out.png 2>/dev/null || echo 0)
+            echo "$url -> HTTP ${code}, ${size} bytes"
+          done
+          echo "-- Current pattern (premierleague25, no p-prefix) --"
+          for url in \
+            "https://resources.premierleague.com/premierleague25/photos/players/110x140/199798.png" \
+            "https://resources.premierleague.com/premierleague25/photos/players/110x140/446008.png"; do
+            code=$(curl -s -o /tmp/out.png -w "%{http_code}" "$url")
+            size=$(stat -c%s /tmp/out.png 2>/dev/null || echo 0)
+            echo "$url -> HTTP ${code}, ${size} bytes"
+          done
