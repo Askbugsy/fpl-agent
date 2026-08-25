@@ -166,15 +166,26 @@ def build_html() -> str:
 <title>FPL Agent Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-  body {{ font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: #0d1117; color: #e6edf3; }}
+  body {{ font-family: -apple-system, sans-serif; margin: 0 auto; padding: 16px; max-width: 900px; background: #0d1117; color: #e6edf3; }}
   h1 {{ font-size: 1.4rem; }}
   .updated {{ color: #8b949e; font-size: 0.85rem; margin-bottom: 24px; }}
   .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 20px; }}
+  .card h3 {{ font-size: 1.02rem; margin: 20px 0 8px; padding-top: 16px; border-top: 1px solid #21262d; }}
+  .card h3:first-of-type {{ margin-top: 12px; }}
+  .section-note {{ color: #8b949e; font-size: 0.8rem; margin: 0 0 10px; }}
   canvas {{ max-height: 320px; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #30363d; }}
   th {{ cursor: pointer; color: #58a6ff; position: sticky; top: 0; background: #161b22; }}
-  .scroll {{ max-height: 400px; overflow-y: auto; }}
+  .scroll {{ max-height: 400px; overflow: auto; }}
+  @media (max-width: 480px) {{
+    body {{ padding: 10px; }}
+    .card {{ padding: 12px; margin-bottom: 14px; }}
+    h1 {{ font-size: 1.2rem; }}
+    .pitch-player {{ min-width: 54px; padding: 4px 6px; font-size: 0.68rem; }}
+    .pitch-pic {{ width: 32px; height: 40px; }}
+    .modal-content {{ padding: 14px; }}
+  }}
   .squad-row {{ padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 0.9rem; display: flex; align-items: center; gap: 8px; }}
   .player-pic {{ width: 32px; height: 40px; object-fit: cover; border-radius: 4px; background: #21262d; flex-shrink: 0; }}
   .squad-row.bench {{ color: #8b949e; }}
@@ -218,11 +229,6 @@ def build_html() -> str:
   <div class="updated">Latest data: {latest_date}</div>
 
   <div class="card">
-    <h2>Best Formation for Upcoming Fixtures</h2>
-    {render_formation_card(formation)}
-  </div>
-
-  <div class="card">
     <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
     {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else
      "<div class='squad-list'><strong>Starting XI</strong>" +
@@ -233,34 +239,35 @@ def build_html() -> str:
   </div>
 
   <div class="card">
-    <h2>Captain Suggestions <span class="subtitle">(form &times; fixture favourability)</span></h2>
+    <h2>Formation &amp; Captain</h2>
+    <p class="section-note">Best lineup shape and who to captain for your upcoming fixtures.</p>
+    {render_formation_card(formation)}
+
+    <h3>Captain Suggestions <span class="subtitle">(form &times; fixture favourability)</span></h3>
     {"<p>Not enough fixture data yet.</p>" if not captain_picks else "".join(
         f'<div class="squad-row">{i+1}. {player_link(c["player_id"], c["name"])} vs {c["opponent"] or "?"} '
         f'({"H" if c["is_home"] else "A" if c["is_home"] is not None else "?"}, FDR {c["difficulty"] or "?"}) '
         f'&mdash; form {c["form"]}, score <strong>{c["score"]}</strong></div>'
         for i, c in enumerate(captain_picks)
     )}
-  </div>
 
-  <div class="card">
-    <h2>Chip Timing <span class="subtitle">(double/blank gameweek detection)</span></h2>
+    <h3>Chip Timing <span class="subtitle">(double/blank gameweek detection)</span></h3>
     <div class="squad-row">🎯 <strong>Triple Captain / Bench Boost:</strong> {chip_advice['triple_captain_bench_boost']}</div>
     <div class="squad-row">🃏 <strong>Free Hit:</strong> {chip_advice['free_hit']}</div>
     <div class="squad-row bench">Wildcard timing isn't scored here - that call depends on broader squad health and fixture swings, better discussed directly.</div>
   </div>
 
   <div class="card">
-    <h2>Transfer Suggestions <span class="subtitle">(form + price trend, budget-aware)</span></h2>
+    <h2>Transfers</h2>
+    <p class="section-note">Squad players worth considering moving on, based on form and price trend.</p>
     {"<p>No players flagged - either everything's stable, or only one snapshot exists so far (trends need two).</p>" if not transfer_suggestions else "".join(render_transfer_suggestion(t) for t in transfer_suggestions)}
-  </div>
 
-  <div class="card">
-    <h2>Movers &amp; Shakers (form change since last week)</h2>
+    <h3>Movers &amp; Shakers <span class="subtitle">(form change since last week)</span></h3>
+    <p class="section-note">The wider form swings behind the suggestions above.</p>
     <canvas id="moversChart"></canvas>
-  </div>
 
-  <div class="card">
-    <h2>Top Value Picks (points/game per £1m)</h2>
+    <h3>Top Value Picks <span class="subtitle">(points/game per £1m)</span></h3>
+    <p class="section-note">Who else is outperforming their price tag right now, as replacement candidates.</p>
     <canvas id="valueChart"></canvas>
   </div>
 
