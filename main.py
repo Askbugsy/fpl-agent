@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_entry_picks, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation
 from config import TEAM_ID
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -37,6 +37,7 @@ def main():
     save_teams(data["teams"])
     fixtures = get_fixtures()
     save_fixtures(fixtures)
+    save_gameweek_summary(data["events"])
     print(f"Saved {len(fixtures)} fixtures with difficulty ratings.\n")
 
     # Work out the current gameweek from the bootstrap data

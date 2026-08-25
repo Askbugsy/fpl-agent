@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats
 from config import TEAM_ID
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -121,21 +121,6 @@ def render_transfer_suggestion(t: dict) -> str:
     </div>'''
 
 
-def render_squad_row(r: dict, is_bench: bool = False) -> str:
-    """Builds one squad-row div. A plain function instead of a giant
-    inline f-string, so quote-escaping doesn't turn into a mess."""
-    photo_url = f"{PLAYER_PHOTO_BASE}/110x140/{r['photo_code']}.png"
-    tag = " (C)" if r.get("is_captain") else " (V)" if r.get("is_vice_captain") else ""
-    points = (r["gw_points"] or 0) * r["multiplier"] if not is_bench else (r["gw_points"] or 0)
-    bench_class = " bench" if is_bench else ""
-    return (
-        f'<div class="squad-row{bench_class}">'
-        f'<img class="player-pic" src="{photo_url}" onerror="this.style.display=\'none\'" alt="">'
-        f'{player_link(r["player_id"], r["name"])} <span class="pos-tag">{r["position"]}</span>{tag} &mdash; {points} pts'
-        f'</div>'
-    )
-
-
 def build_html() -> str:
     movers = get_movers(limit=10)
     value_picks = get_top_value(limit=10)
@@ -156,6 +141,7 @@ def build_html() -> str:
 
     profiles = get_all_player_profiles()
     formation = get_optimal_formation(TEAM_ID)
+    manager_stats = get_manager_stats(TEAM_ID)
 
     formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
 
@@ -166,6 +152,7 @@ def build_html() -> str:
     formations_json = json.dumps(formations_by_label)
     best_formation_json = json.dumps(formation.get("formation"))
     photo_base_json = json.dumps(PLAYER_PHOTO_BASE)
+    squad_json = json.dumps(squad)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -231,6 +218,10 @@ def build_html() -> str:
   .formation-compare-row.best {{ color: #3fb950; font-weight: bold; }}
   .formation-compare-row.selected {{ border-color: #58a6ff; background: #21262d; }}
   .best-tag {{ font-size: 0.65rem; font-weight: normal; color: #0d1117; background: #3fb950; border-radius: 8px; padding: 1px 6px; margin-left: 4px; }}
+  .toggle-row {{ display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }}
+  .toggle-btn {{ background: #21262d; border: 1px solid #30363d; color: #8b949e; border-radius: 6px;
+                  padding: 5px 10px; font-size: 0.75rem; cursor: pointer; }}
+  .toggle-btn.active {{ background: #58a6ff; color: #0d1117; border-color: #58a6ff; font-weight: bold; }}
 </style>
 </head>
 <body>
@@ -238,13 +229,36 @@ def build_html() -> str:
   <div class="updated">Latest data: {latest_date}</div>
 
   <div class="card">
+    <h2>Manager Stats {"" if not manager_stats else f"&mdash; Gameweek {manager_stats['gameweek']}"}</h2>
+    {"<p>No manager data yet.</p>" if not manager_stats else f'''
+    <div class="modal-stats">
+      <div><span>Your points</span><span><strong>{manager_stats['gw_points'] if manager_stats.get('gw_points') is not None else '-'}</strong></span></div>
+      <div><span>League average</span><span>{manager_stats['average_score'] if manager_stats.get('average_score') is not None else '-'}</span></div>
+      <div><span>League highest</span><span>{manager_stats['highest_score'] if manager_stats.get('highest_score') is not None else '-'}</span></div>
+      <div><span>GW rank</span><span>{f"{manager_stats['gw_rank']:,}" if manager_stats.get('gw_rank') is not None else '-'}</span></div>
+      <div><span>Overall rank</span><span>{f"{manager_stats['overall_rank']:,}" if manager_stats.get('overall_rank') is not None else '-'}</span></div>
+      <div><span>Squad value</span><span>{f"£{manager_stats['team_value']}m" if manager_stats.get('team_value') is not None else '-'}</span></div>
+      <div><span>Bank</span><span>{f"£{manager_stats['bank']}m" if manager_stats.get('bank') is not None else '-'}</span></div>
+    </div>
+    '''}
+  </div>
+
+  <div class="card">
     <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
-    {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else
-     "<div class='squad-list'><strong>Starting XI</strong>" +
-     "".join(render_squad_row(r) for r in starters) +
-     "<strong>Bench</strong>" +
-     "".join(render_squad_row(r, is_bench=True) for r in bench) +
-     "</div>"}
+    {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else '''
+    <div class="toggle-row" id="squadToggle">
+      <button class="toggle-btn active" data-metric="points">Points</button>
+      <button class="toggle-btn" data-metric="opponent">Opponent</button>
+      <button class="toggle-btn" data-metric="price">Price</button>
+      <button class="toggle-btn" data-metric="selling_price">Selling</button>
+      <button class="toggle-btn" data-metric="difficulty">FDR</button>
+      <button class="toggle-btn" data-metric="form">Form</button>
+      <button class="toggle-btn" data-metric="selected_by_percent">Own%</button>
+      <button class="toggle-btn" data-metric="price_change">Price &Delta;</button>
+    </div>
+    <div class="squad-list" id="squadStartersList"><strong>Starting XI</strong></div>
+    <div class="squad-list" id="squadBenchList"><strong>Bench</strong></div>
+    '''}
   </div>
 
   <div class="card">
@@ -315,6 +329,7 @@ const playerProfiles = {profiles_json};
 const allFormations = {formations_json};
 const bestFormationLabel = {best_formation_json};
 const PLAYER_PHOTO_BASE = {photo_base_json};
+const squad = {squad_json};
 
 new Chart(document.getElementById('moversChart'), {{
   type: 'bar',
@@ -453,6 +468,56 @@ function selectFormation(label) {{
 }}
 
 if (bestFormationLabel) selectFormation(bestFormationLabel);
+
+const SQUAD_METRICS = {{
+  points: {{ label: 'Pts', value: (r, isBench) => isBench ? (r.gw_points || 0) : (r.gw_points || 0) * r.multiplier }},
+  opponent: {{ label: 'Opp', value: r => r.opponent || '-' }},
+  price: {{ label: 'Price', value: r => `£${{r.price}}m` }},
+  selling_price: {{ label: 'Selling', value: r => r.selling_price != null ? `£${{r.selling_price}}m` : '-' }},
+  difficulty: {{ label: 'FDR', value: r => r.difficulty != null ? r.difficulty : '-' }},
+  form: {{ label: 'Form', value: r => r.form }},
+  selected_by_percent: {{ label: 'Own%', value: r => `${{r.selected_by_percent}}%` }},
+  price_change: {{ label: 'Price Δ', value: r => {{
+    if (r.price_change == null) return '-';
+    if (r.price_change > 0) return `+£${{r.price_change}}m`;
+    if (r.price_change < 0) return `-£${{Math.abs(r.price_change)}}m`;
+    return '£0.0m';
+  }} }},
+}};
+
+function squadRowHTML(r, metric, isBench) {{
+  const m = SQUAD_METRICS[metric];
+  const tag = r.is_captain ? ' (C)' : r.is_vice_captain ? ' (V)' : '';
+  const photoUrl = `${{PLAYER_PHOTO_BASE}}/110x140/${{r.photo_code}}.png`;
+  return `
+    <div class="squad-row${{isBench ? ' bench' : ''}}">
+      <img class="player-pic" src="${{photoUrl}}" onerror="this.style.display='none'" alt="">
+      <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>
+      <span class="pos-tag">${{r.position}}</span>${{tag}} &mdash; ${{m.label}} ${{m.value(r, isBench)}}
+    </div>`;
+}}
+
+function renderSquadLists(metric) {{
+  const starters = squad.filter(r => r.multiplier > 0);
+  const bench = squad.filter(r => r.multiplier === 0);
+  document.getElementById('squadStartersList').innerHTML =
+    '<strong>Starting XI</strong>' + starters.map(r => squadRowHTML(r, metric, false)).join('');
+  document.getElementById('squadBenchList').innerHTML =
+    '<strong>Bench</strong>' + bench.map(r => squadRowHTML(r, metric, true)).join('');
+}}
+
+const squadToggle = document.getElementById('squadToggle');
+if (squadToggle) {{
+  squadToggle.querySelectorAll('.toggle-btn').forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      squadToggle.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderSquadLists(btn.dataset.metric);
+    }});
+  }});
+}}
+
+if (squad.length) renderSquadLists('points');
 </script>
 </body>
 </html>"""
