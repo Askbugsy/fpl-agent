@@ -402,7 +402,10 @@ function openProfile(playerId) {{
   const p = playerProfiles[playerId];
   if (!p) return;  // no profile data for this id - fail quietly rather than break the page
 
-  const photoUrl = `${{PLAYER_PHOTO_BASE}}/250x250/${{p.photo_code}}.png`;
+  // 250x250 (and larger) return HTTP 403 on the real CDN - confirmed
+  // 2026-08-25. 110x140 is the size actually served, same as the pitch
+  // photos use elsewhere on this page.
+  const photoUrl = `${{PLAYER_PHOTO_BASE}}/110x140/${{p.photo_code}}.png`;
   let gwRows = '';
   if (p.gw_history && p.gw_history.length) {{
     gwRows = `<table class="modal-gw-table"><thead><tr><th>GW</th><th>Pts</th><th>Min</th><th>G</th><th>A</th></tr></thead><tbody>` +
