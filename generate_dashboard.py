@@ -36,10 +36,19 @@ POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 # image URL again and update this constant to match.
 PLAYER_PHOTO_BASE = "https://resources.premierleague.com/premierleague25/photos/players"
 
-# Shown in place of a player photo that fails to load - some players (often
-# fringe/reserve squad members) simply don't have a headshot on Premier
-# League's CDN yet. A plain grey silhouette, inlined as base64 so it never
-# needs its own network request and can't itself fail to load.
+# Fallback bucket for players who don't have a photo in the current-season
+# bucket above (confirmed 2026-08-25: Konsa 403s on premierleague25 but
+# resolves fine here). This bucket can serve a stale, wrong-kit photo for
+# players who've since had their current-season photo published (confirmed
+# against Mbeumo - different file, different size, to the premierleague25
+# version) - so it's only used as a second choice, never first.
+PLAYER_PHOTO_LEGACY_BASE = "https://resources.premierleague.com/premierleague/photos/players"
+
+# Shown in place of a player photo that fails to load on both buckets above
+# - some players (often fringe/reserve squad members) simply don't have a
+# headshot on Premier League's CDN yet at all. A plain grey silhouette,
+# inlined as base64 so it never needs its own network request and can't
+# itself fail to load.
 PLAYER_PHOTO_FALLBACK = (
     "data:image/svg+xml;base64,"
     "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzMwMzYzZCIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iMzgiIHI9IjE4IiBmaWxsPSIjOGI5NDllIi8+PHBhdGggZD0iTTIwIDkwYzAtMjIgMTMtMzYgMzAtMzZzMzAgMTQgMzAgMzYiIGZpbGw9IiM4Yjk0OWUiLz48L3N2Zz4="
@@ -161,6 +170,7 @@ def build_html() -> str:
     formations_json = json.dumps(formations_by_label)
     best_formation_json = json.dumps(formation.get("formation"))
     photo_base_json = json.dumps(PLAYER_PHOTO_BASE)
+    photo_legacy_base_json = json.dumps(PLAYER_PHOTO_LEGACY_BASE)
     photo_fallback_json = json.dumps(PLAYER_PHOTO_FALLBACK)
     squad_json = json.dumps(squad)
 
@@ -338,8 +348,18 @@ const playerProfiles = {profiles_json};
 const allFormations = {formations_json};
 const bestFormationLabel = {best_formation_json};
 const PLAYER_PHOTO_BASE = {photo_base_json};
+const PLAYER_PHOTO_LEGACY_BASE = {photo_legacy_base_json};
 const PLAYER_PHOTO_FALLBACK = {photo_fallback_json};
 const squad = {squad_json};
+
+// Current-season photo first (correct kit when it exists); if that 403s,
+// fall back to the legacy bucket (a real photo, but can be a stale/wrong
+// kit for anyone transferred or re-photographed this season); only show
+// the silhouette if neither bucket has anything at all.
+function photoOnErrorAttr(photoCode) {{
+  const legacyUrl = `${{PLAYER_PHOTO_LEGACY_BASE}}/110x140/p${{photoCode}}.png`;
+  return `this.onerror=function(){{this.onerror=null;this.src='${{PLAYER_PHOTO_FALLBACK}}';}};this.src='${{legacyUrl}}'`;
+}}
 
 new Chart(document.getElementById('moversChart'), {{
   type: 'bar',
@@ -417,7 +437,7 @@ function openProfile(playerId) {{
 
   document.getElementById('modalBody').innerHTML = `
     <div class="modal-header">
-      <img src="${{photoUrl}}" onerror="this.onerror=null;this.src='${{PLAYER_PHOTO_FALLBACK}}'" alt="">
+      <img src="${{photoUrl}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
       <div><strong>${{p.full_name || p.name}}</strong><br><span style="color:#8b949e">${{p.team || ''}} &middot; ${{POS_NAMES[p.position] || '?'}}</span></div>
     </div>
     <div class="modal-stats">
@@ -447,7 +467,7 @@ function buildPitchHTML(xi, captainId) {{
   return [1, 2, 3, 4].map(pos => {{
     const cells = byPos[pos].map(p => `
       <div class="pitch-player${{p.player_id === captainId ? ' is-captain' : ''}}">
-        <img class="pitch-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="this.onerror=null;this.src='${{PLAYER_PHOTO_FALLBACK}}'" alt="">
+        <img class="pitch-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
         <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span><br>
         <span class="pitch-score">${{p.score}}${{p.player_id === captainId ? ' (C)' : ''}}</span>
       </div>`).join('');
@@ -458,7 +478,7 @@ function buildPitchHTML(xi, captainId) {{
 function buildBenchHTML(bench) {{
   return bench.map(p => `
     <div class="squad-row bench">
-      <img class="player-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="this.onerror=null;this.src='${{PLAYER_PHOTO_FALLBACK}}'" alt="">
+      <img class="player-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
       <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span>
       <span class="pos-tag">${{POS_NAMES[p.position] || '?'}}</span> &mdash; score ${{p.score}}
     </div>`).join('');
@@ -506,7 +526,7 @@ function squadPitchPlayerHTML(r, metric) {{
   const photoUrl = `${{PLAYER_PHOTO_BASE}}/110x140/${{r.photo_code}}.png`;
   return `
     <div class="pitch-player${{r.is_captain ? ' is-captain' : ''}}">
-      <img class="pitch-pic" src="${{photoUrl}}" onerror="this.onerror=null;this.src='${{PLAYER_PHOTO_FALLBACK}}'" alt="">
+      <img class="pitch-pic" src="${{photoUrl}}" onerror="${{photoOnErrorAttr(r.photo_code)}}" alt="">
       <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>${{tag}}<br>
       <span class="pitch-score">${{m.label}} ${{m.value(r)}}</span>
     </div>`;
