@@ -28,6 +28,14 @@ from config import TEAM_ID
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
+# The "premierleague25" segment is a Premier League-side asset bucket, not
+# something exposed by any bootstrap-static field - confirmed against the
+# real FPL site's own image URL (2026-08-25). It's bumped by Premier League
+# itself when they refresh player photos for kit changes/transfers/a new
+# season, so if photos start showing stale kits again, check the real site's
+# image URL again and update this constant to match.
+PLAYER_PHOTO_BASE = "https://resources.premierleague.com/premierleague25/photos/players"
+
 
 def get_latest_full_table() -> list[dict]:
     conn = get_connection()
@@ -116,7 +124,7 @@ def render_transfer_suggestion(t: dict) -> str:
 def render_squad_row(r: dict, is_bench: bool = False) -> str:
     """Builds one squad-row div. A plain function instead of a giant
     inline f-string, so quote-escaping doesn't turn into a mess."""
-    photo_url = f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{r['photo_code']}.png"
+    photo_url = f"{PLAYER_PHOTO_BASE}/110x140/{r['photo_code']}.png"
     tag = " (C)" if r.get("is_captain") else " (V)" if r.get("is_vice_captain") else ""
     points = (r["gw_points"] or 0) * r["multiplier"] if not is_bench else (r["gw_points"] or 0)
     bench_class = " bench" if is_bench else ""
@@ -157,6 +165,7 @@ def build_html() -> str:
     profiles_json = json.dumps(profiles)
     formations_json = json.dumps(formations_by_label)
     best_formation_json = json.dumps(formation.get("formation"))
+    photo_base_json = json.dumps(PLAYER_PHOTO_BASE)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -305,6 +314,7 @@ const fullTable = {table_json};
 const playerProfiles = {profiles_json};
 const allFormations = {formations_json};
 const bestFormationLabel = {best_formation_json};
+const PLAYER_PHOTO_BASE = {photo_base_json};
 
 new Chart(document.getElementById('moversChart'), {{
   type: 'bar',
@@ -367,7 +377,7 @@ function openProfile(playerId) {{
   const p = playerProfiles[playerId];
   if (!p) return;  // no profile data for this id - fail quietly rather than break the page
 
-  const photoUrl = `https://resources.premierleague.com/premierleague/photos/players/250x250/p${{p.photo_code}}.png`;
+  const photoUrl = `${{PLAYER_PHOTO_BASE}}/250x250/${{p.photo_code}}.png`;
   let gwRows = '';
   if (p.gw_history && p.gw_history.length) {{
     gwRows = `<table class="modal-gw-table"><thead><tr><th>GW</th><th>Pts</th><th>Min</th><th>G</th><th>A</th></tr></thead><tbody>` +
@@ -400,7 +410,7 @@ function closeProfile() {{
 }}
 
 function pitchPhotoUrl(photoCode) {{
-  return `https://resources.premierleague.com/premierleague/photos/players/110x140/p${{photoCode}}.png`;
+  return `${{PLAYER_PHOTO_BASE}}/110x140/${{photoCode}}.png`;
 }}
 
 function buildPitchHTML(xi, captainId) {{
