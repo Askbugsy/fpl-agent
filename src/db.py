@@ -63,8 +63,15 @@ CREATE TABLE IF NOT EXISTS entry_summary (
     bank REAL,              -- money in the bank, in £m
     team_value REAL,        -- total squad value, in £m
     gw_points INTEGER,
+    gw_rank INTEGER,        -- your rank for this gameweek specifically
     overall_rank INTEGER,
     PRIMARY KEY (entry_id, gameweek)
+);
+
+CREATE TABLE IF NOT EXISTS gameweek_summary (
+    gameweek INTEGER PRIMARY KEY,
+    average_score INTEGER,
+    highest_score INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS player_gw_history (
@@ -111,6 +118,7 @@ def get_connection() -> sqlite3.Connection:
         "ALTER TABLE teams ADD COLUMN team_code INTEGER",
         "ALTER TABLE squad_picks ADD COLUMN selling_price REAL",
         "ALTER TABLE squad_picks ADD COLUMN purchase_price REAL",
+        "ALTER TABLE entry_summary ADD COLUMN gw_rank INTEGER",
     ):
         try:
             conn.execute(stmt)
@@ -221,17 +229,23 @@ def save_squad_picks(entry_id: int, gameweek: int, picks_data: dict, player_poin
 
 
 def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict) -> None:
-    """Saves bank/team value for this gameweek, from the same picks API call."""
+    """
+    Saves bank/team value/rank for this gameweek. All of this comes
+    from the same picks API call we already make - 'rank' (your
+    position for this specific gameweek) was sitting in the response
+    unused until now.
+    """
     conn = get_connection()
     conn.execute(
         """INSERT OR REPLACE INTO entry_summary
-           (entry_id, gameweek, bank, team_value, gw_points, overall_rank)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           (entry_id, gameweek, bank, team_value, gw_points, gw_rank, overall_rank)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             entry_id, gameweek,
             entry_history.get("bank", 0) / 10,
             entry_history.get("value", 0) / 10,
             entry_history.get("points"),
+            entry_history.get("rank"),
             entry_history.get("overall_rank"),
         ),
     )
@@ -239,11 +253,71 @@ def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict) -> Non
     conn.close()
 
 
+def save_gameweek_summary(events: list[dict]) -> None:
+    """
+    Saves the league-wide average and highest score per gameweek -
+    already present in the bootstrap-static 'events' array we fetch
+    every week anyway, just wasn't being captured until now.
+    """
+    conn = get_connection()
+    rows = [
+        (e["id"], e.get("average_entry_score"), e.get("highest_score"))
+        for e in events
+        if e.get("average_entry_score") is not None
+    ]
+    conn.executemany(
+        "INSERT OR REPLACE INTO gameweek_summary (gameweek, average_score, highest_score) VALUES (?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_manager_stats(entry_id: int) -> dict:
+    """
+    Your stats for the latest gameweek, alongside the league-wide
+    average/highest score for that same gameweek - the comparison
+    that makes your own number mean something.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    latest_gw = conn.execute(
+        "SELECT MAX(gameweek) AS gw FROM entry_summary WHERE entry_id = ?", (entry_id,)
+    ).fetchone()["gw"]
+    if latest_gw is None:
+        conn.close()
+        return {}
+
+    entry = conn.execute(
+        "SELECT * FROM entry_summary WHERE entry_id = ? AND gameweek = ?",
+        (entry_id, latest_gw),
+    ).fetchone()
+    gw_summary = conn.execute(
+        "SELECT * FROM gameweek_summary WHERE gameweek = ?", (latest_gw,)
+    ).fetchone()
+
+    conn.close()
+    return {
+        "gameweek": latest_gw,
+        "gw_points": entry["gw_points"] if entry else None,
+        "gw_rank": entry["gw_rank"] if entry else None,
+        "overall_rank": entry["overall_rank"] if entry else None,
+        "bank": entry["bank"] if entry else None,
+        "team_value": entry["team_value"] if entry else None,
+        "average_score": gw_summary["average_score"] if gw_summary else None,
+        "highest_score": gw_summary["highest_score"] if gw_summary else None,
+    }
+
+
 def get_latest_squad(entry_id: int) -> list[dict]:
     """
-    Returns the most recent gameweek's squad for this entry, each
-    row joined with the player's current name/team/position from
-    the latest player_snapshots data.
+    Returns the most recent gameweek's squad for this entry, with
+    every stat needed for the FPL-style pitch-view toggle (Opponent,
+    Points, Price, Selling Price, FDR, Form, Ownership, Price
+    Change) - one call, all fields, so the dashboard can embed it
+    once and let the person switch views client-side without extra
+    queries.
     """
     conn = get_connection()
     conn.row_factory = sqlite3.Row
@@ -255,15 +329,18 @@ def get_latest_squad(entry_id: int) -> list[dict]:
         conn.close()
         return []
 
-    latest_snapshot_date = conn.execute(
-        "SELECT MAX(snapshot_date) AS d FROM player_snapshots"
-    ).fetchone()["d"]
+    dates = conn.execute(
+        "SELECT DISTINCT snapshot_date FROM player_snapshots ORDER BY snapshot_date DESC LIMIT 2"
+    ).fetchall()
+    latest_snapshot_date = dates[0]["snapshot_date"]
+    previous_snapshot_date = dates[1]["snapshot_date"] if len(dates) > 1 else None
 
     rows = conn.execute(
         """
         SELECT sp.player_id, sp.squad_position, sp.multiplier, sp.is_captain,
-               sp.is_vice_captain, sp.gw_points,
-               ps.name, ps.position, ps.price, ps.photo_code
+               sp.is_vice_captain, sp.gw_points, sp.selling_price,
+               ps.name, ps.position, ps.price, ps.photo_code, ps.team,
+               ps.form, ps.selected_by_percent
         FROM squad_picks sp
         JOIN player_snapshots ps
           ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
@@ -273,8 +350,40 @@ def get_latest_squad(entry_id: int) -> list[dict]:
         (latest_snapshot_date, entry_id, latest_gw),
     ).fetchall()
 
+    squad = []
+    for r in rows:
+        row = dict(r)
+
+        # Next fixture: opponent + FDR (same lookup pattern as captain suggestions)
+        fixture = conn.execute(
+            """SELECT team_h, team_a, team_h_difficulty, team_a_difficulty
+               FROM fixtures WHERE (team_h = ? OR team_a = ?) AND finished = 0
+               ORDER BY gameweek ASC LIMIT 1""",
+            (row["team"], row["team"]),
+        ).fetchone()
+        if fixture:
+            is_home = fixture["team_h"] == row["team"]
+            row["difficulty"] = fixture["team_h_difficulty"] if is_home else fixture["team_a_difficulty"]
+            opp_id = fixture["team_a"] if is_home else fixture["team_h"]
+            opp = conn.execute("SELECT short_name FROM teams WHERE team_id = ?", (opp_id,)).fetchone()
+            row["opponent"] = f"{opp['short_name']} ({'H' if is_home else 'A'})" if opp else None
+        else:
+            row["difficulty"], row["opponent"] = None, None
+
+        # Price change vs the previous snapshot
+        row["price_change"] = None
+        if previous_snapshot_date:
+            prev = conn.execute(
+                "SELECT price FROM player_snapshots WHERE player_id = ? AND snapshot_date = ?",
+                (row["player_id"], previous_snapshot_date),
+            ).fetchone()
+            if prev:
+                row["price_change"] = round(row["price"] - prev["price"], 1)
+
+        squad.append(row)
+
     conn.close()
-    return [dict(r) for r in rows]
+    return squad
 
 
 def save_teams(teams: list[dict]) -> None:
