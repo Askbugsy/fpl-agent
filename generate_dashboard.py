@@ -334,6 +334,13 @@ def build_html() -> str:
 
   <div class="card">
     <h2>Full Table</h2>
+    <div class="toggle-row" id="positionFilter">
+      <button class="toggle-btn active" data-position="All">All</button>
+      <button class="toggle-btn" data-position="GK">GK</button>
+      <button class="toggle-btn" data-position="DEF">DEF</button>
+      <button class="toggle-btn" data-position="MID">MID</button>
+      <button class="toggle-btn" data-position="FWD">FWD</button>
+    </div>
     <div class="scroll">
       <table id="fullTable">
         <thead>
@@ -422,18 +429,38 @@ function renderTable(rows) {{
       <td>${{r.points_per_game}}</td><td>${{r.selected_by_percent}}%</td>
     </tr>`).join('');
 }}
-renderTable(fullTable);
 
 const keys = ['name','position','price','total_points','form','points_per_game','selected_by_percent'];
 let sortDir = {{}};
-function sortTable(colIndex) {{
-  const key = keys[colIndex];
-  sortDir[key] = !sortDir[key];
-  const sorted = [...fullTable].sort((a, b) =>
-    sortDir[key] ? (a[key] > b[key] ? 1 : -1) : (a[key] < b[key] ? 1 : -1)
-  );
-  renderTable(sorted);
+let sortKey = null;
+let positionFilter = 'All';
+
+function applyTableFilterAndSort() {{
+  let rows = positionFilter === 'All' ? fullTable : fullTable.filter(r => r.position === positionFilter);
+  if (sortKey) {{
+    rows = [...rows].sort((a, b) =>
+      sortDir[sortKey] ? (a[sortKey] > b[sortKey] ? 1 : -1) : (a[sortKey] < b[sortKey] ? 1 : -1)
+    );
+  }}
+  renderTable(rows);
 }}
+
+function sortTable(colIndex) {{
+  sortKey = keys[colIndex];
+  sortDir[sortKey] = !sortDir[sortKey];
+  applyTableFilterAndSort();
+}}
+
+document.getElementById('positionFilter').querySelectorAll('.toggle-btn').forEach(btn => {{
+  btn.addEventListener('click', () => {{
+    positionFilter = btn.dataset.position;
+    document.getElementById('positionFilter').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    applyTableFilterAndSort();
+  }});
+}});
+
+applyTableFilterAndSort();
 
 const POS_NAMES = {{1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}};
 
