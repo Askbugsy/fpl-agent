@@ -21,9 +21,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_element_summary
-from db import get_connection
+from db import get_connection, CURRENT_SEASON
 
-CURRENT_SEASON = "2026/27"
 DELAY_BETWEEN_REQUESTS = 0.3  # seconds - be a reasonable API citizen
 
 

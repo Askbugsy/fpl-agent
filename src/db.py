@@ -24,6 +24,7 @@ from datetime import date
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "data" / "fpl.db"
+CURRENT_SEASON = "2026/27"  # matches backfill_history.py - used to pull this season's gw history
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS player_snapshots (
@@ -169,7 +170,7 @@ def get_movers(limit: int = 10) -> list[dict]:
 
     rows = conn.execute(
         """
-        SELECT cur.name, cur.price, cur.form AS current_form,
+        SELECT cur.player_id, cur.name, cur.price, cur.form AS current_form,
                (cur.form - prev.form) AS form_change,
                (cur.total_points - prev.total_points) AS points_gained
         FROM player_snapshots cur
@@ -260,7 +261,7 @@ def get_latest_squad(entry_id: int) -> list[dict]:
 
     rows = conn.execute(
         """
-        SELECT sp.squad_position, sp.multiplier, sp.is_captain,
+        SELECT sp.player_id, sp.squad_position, sp.multiplier, sp.is_captain,
                sp.is_vice_captain, sp.gw_points,
                ps.name, ps.position, ps.price, ps.photo_code
         FROM squad_picks sp
@@ -375,7 +376,7 @@ def get_captain_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60
             opponent_name = row["short_name"] if row else None
 
         results.append({
-            "name": p["name"], "position": p["position"], "form": p["form"],
+            "player_id": p["player_id"], "name": p["name"], "position": p["position"], "form": p["form"],
             "price": p["price"], "difficulty": difficulty,
             "opponent": opponent_name, "is_home": is_home, "score": score,
         })
@@ -564,7 +565,7 @@ def get_transfer_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 6
 
         placeholders = ",".join("?" * len(squad_ids))
         candidates = conn.execute(
-            f"""SELECT name, price, form, points_per_game,
+            f"""SELECT player_id, name, price, form, points_per_game,
                        ROUND(points_per_game / price, 3) AS value_score
                 FROM player_snapshots
                 WHERE snapshot_date = ? AND position = ? AND minutes >= ?
@@ -574,7 +575,7 @@ def get_transfer_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 6
         ).fetchall()
 
         flagged.append({
-            "name": s["name"], "position": s["position"], "urgency": tier,
+            "player_id": s["player_id"], "name": s["name"], "position": s["position"], "urgency": tier,
             "urgency_score": urgency_score, "form_drop": round(form_drop, 1),
             "price_drop": round(price_drop, 1), "budget_available": budget,
             "candidates": [dict(c) for c in candidates],
@@ -583,6 +584,59 @@ def get_transfer_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 6
     conn.close()
     flagged.sort(key=lambda f: f["urgency_score"], reverse=True)
     return flagged[:limit]
+
+
+def get_all_player_profiles(min_minutes: int = 0) -> dict:
+    """
+    Builds a lookup dict of every player's season-to-date profile,
+    keyed by player_id - meant to be embedded once in the dashboard
+    page as JSON, so any click-to-view-profile popup anywhere on the
+    page can look a player up instantly without a fresh query.
+
+    Includes gameweek-by-gameweek history if backfill_history.py has
+    been run; falls back gracefully to current-snapshot data alone
+    if not (empty gw_history list rather than an error).
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    latest_date = conn.execute(
+        "SELECT MAX(snapshot_date) AS d FROM player_snapshots"
+    ).fetchone()["d"]
+    if latest_date is None:
+        conn.close()
+        return {}
+
+    players = conn.execute(
+        """SELECT ps.player_id, ps.name, ps.position, ps.price, ps.total_points,
+                  ps.form, ps.points_per_game, ps.minutes, ps.selected_by_percent,
+                  ps.photo_code, t.short_name AS team
+           FROM player_snapshots ps
+           LEFT JOIN teams t ON ps.team = t.team_id
+           WHERE ps.snapshot_date = ? AND ps.minutes >= ?""",
+        (latest_date, min_minutes),
+    ).fetchall()
+
+    profiles = {}
+    for p in players:
+        history = conn.execute(
+            """SELECT gameweek, total_points, minutes, goals_scored, assists
+               FROM player_gw_history
+               WHERE player_id = ? AND season = ? AND gameweek IS NOT NULL
+               ORDER BY gameweek""",
+            (p["player_id"], CURRENT_SEASON),
+        ).fetchall()
+
+        profiles[p["player_id"]] = {
+            "name": p["name"], "team": p["team"], "position": p["position"],
+            "price": p["price"], "total_points": p["total_points"], "form": p["form"],
+            "points_per_game": p["points_per_game"], "minutes": p["minutes"],
+            "selected_by_percent": p["selected_by_percent"], "photo_code": p["photo_code"],
+            "gw_history": [dict(h) for h in history],
+        }
+
+    conn.close()
+    return profiles
 
 
 def get_top_value(position: int | None = None, min_minutes: int = 90, limit: int = 10) -> list[dict]:
@@ -595,7 +649,7 @@ def get_top_value(position: int | None = None, min_minutes: int = 90, limit: int
     ).fetchone()["d"]
 
     query = """
-        SELECT name, team, position, price, points_per_game,
+        SELECT player_id, name, team, position, price, points_per_game,
                ROUND(points_per_game / price, 3) AS value_score
         FROM player_snapshots
         WHERE snapshot_date = ? AND minutes >= ?
