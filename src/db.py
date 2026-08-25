@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS player_snapshots (
     minutes INTEGER NOT NULL,
     selected_by_percent REAL NOT NULL,
     photo_code INTEGER,
+    full_name TEXT,
     PRIMARY KEY (player_id, snapshot_date)
 );
 
@@ -119,6 +120,7 @@ def get_connection() -> sqlite3.Connection:
         "ALTER TABLE squad_picks ADD COLUMN selling_price REAL",
         "ALTER TABLE squad_picks ADD COLUMN purchase_price REAL",
         "ALTER TABLE entry_summary ADD COLUMN gw_rank INTEGER",
+        "ALTER TABLE player_snapshots ADD COLUMN full_name TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -140,7 +142,7 @@ def save_snapshot(players: list[dict]) -> str:
             p["id"], today, p["web_name"], p["team"], p["element_type"],
             p["now_cost"] / 10, p["total_points"], float(p["form"]),
             float(p["points_per_game"]), p["minutes"], float(p["selected_by_percent"]),
-            p["code"],
+            p["code"], f"{p['first_name']} {p['second_name']}".strip(),
         )
         for p in players
     ]
@@ -149,8 +151,8 @@ def save_snapshot(players: list[dict]) -> str:
         """INSERT OR REPLACE INTO player_snapshots
            (player_id, snapshot_date, name, team, position, price,
             total_points, form, points_per_game, minutes, selected_by_percent,
-            photo_code)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            photo_code, full_name)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -823,7 +825,7 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
         return {}
 
     players = conn.execute(
-        """SELECT ps.player_id, ps.name, ps.position, ps.price, ps.total_points,
+        """SELECT ps.player_id, ps.name, ps.full_name, ps.position, ps.price, ps.total_points,
                   ps.form, ps.points_per_game, ps.minutes, ps.selected_by_percent,
                   ps.photo_code, t.short_name AS team
            FROM player_snapshots ps
@@ -843,7 +845,8 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
         ).fetchall()
 
         profiles[p["player_id"]] = {
-            "name": p["name"], "team": p["team"], "position": p["position"],
+            "name": p["name"], "full_name": p["full_name"] or p["name"],
+            "team": p["team"], "position": p["position"],
             "price": p["price"], "total_points": p["total_points"], "form": p["form"],
             "points_per_game": p["points_per_game"], "minutes": p["minutes"],
             "selected_by_percent": p["selected_by_percent"], "photo_code": p["photo_code"],

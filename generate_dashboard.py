@@ -418,7 +418,7 @@ function openProfile(playerId) {{
   document.getElementById('modalBody').innerHTML = `
     <div class="modal-header">
       <img src="${{photoUrl}}" onerror="this.onerror=null;this.src='${{PLAYER_PHOTO_FALLBACK}}'" alt="">
-      <div><strong>${{p.name}}</strong><br><span style="color:#8b949e">${{p.team || ''}} &middot; ${{POS_NAMES[p.position] || '?'}}</span></div>
+      <div><strong>${{p.full_name || p.name}}</strong><br><span style="color:#8b949e">${{p.team || ''}} &middot; ${{POS_NAMES[p.position] || '?'}}</span></div>
     </div>
     <div class="modal-stats">
       <div><span>Price</span><span>£${{p.price}}m</span></div>
