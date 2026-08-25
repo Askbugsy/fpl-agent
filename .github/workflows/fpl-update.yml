@@ -1,24 +1,49 @@
-name: FPL Update
+name: FPL Weekly Data Pull
 
+# Two ways this workflow starts:
+#   1. schedule  -> runs automatically, no one needs to press anything
+#   2. workflow_dispatch -> adds a manual "Run workflow" button in the
+#      Actions tab, for exactly the "staggered fixture week" case -
+#      Bank Holiday rounds, rescheduled games, etc.
 on:
   schedule:
+    # Cron is in UTC and does NOT auto-adjust for BST. 6:00 UTC is
+    # 7:00am UK time in summer (BST) and 6:00am in winter (GMT).
+    # Tuesday = day-of-week 2.
     - cron: "0 6 * * 2"
-  workflow_dispatch: {}
+  workflow_dispatch: {}   # <- this is the "run now" button
 
 jobs:
-  update:
+  pull-fpl-data:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed so the job can commit the new data + dashboard
+
     steps:
-      - name: Checkout
+      - name: Check out the repo
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run main.py
+      - name: Run the data pull
         run: python3 main.py
+
+      - name: Build the dashboard
+        run: python3 generate_dashboard.py
+
+      - name: Stamp README with last-pull time
+        run: python3 update_status.py
+
+      - name: Commit and push updated data + dashboard
+        run: |
+          git config user.name "fpl-agent-bot"
+          git config user.email "actions@github.com"
+          git add data/fpl.db docs/ README.md
+          git diff --quiet --cached || git commit -m "Weekly data + dashboard update $(date -u +%Y-%m-%d)"
+          git push
