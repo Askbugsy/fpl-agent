@@ -425,10 +425,12 @@ def get_optimal_formation(entry_id: int, min_minutes: int = 0) -> dict:
     optimal for that formation. The only real work is comparing
     across all valid formations to find the best one overall.
 
-    Returns the recommended formation, its starting XI + bench, a
-    suggested captain, and a comparison table of every formation's
-    projected total (so you can see *why* one beats the others, not
-    just trust a black-box recommendation).
+    Returns the recommended formation plus full starting XI + bench +
+    suggested captain for EVERY valid formation (not just the best
+    one) under "all_formations", keyed off nothing but ordered by
+    projected total - so a dashboard can let you switch between
+    formations client-side without another query, while still
+    defaulting to the recommendation.
     """
     projections = get_squad_player_projections(entry_id, min_minutes)
     if not projections:
@@ -444,8 +446,7 @@ def get_optimal_formation(entry_id: int, min_minutes: int = 0) -> dict:
         return {"formation": None, "reason": "No goalkeeper data available yet."}
     best_gk = by_position[1][0]  # same keeper regardless of outfield shape
 
-    comparisons = []
-    best = None
+    all_formations = []
 
     for d, m, f in VALID_FORMATIONS:
         if len(by_position[2]) < d or len(by_position[3]) < m or len(by_position[4]) < f:
@@ -456,24 +457,25 @@ def get_optimal_formation(entry_id: int, min_minutes: int = 0) -> dict:
         forwards = by_position[4][:f]
         xi = [best_gk] + defenders + midfielders + forwards
         total = round(sum(p["score"] for p in xi), 2)
-
         label = f"{d}-{m}-{f}"
-        comparisons.append({"formation": label, "projected_total": total})
 
-        if best is None or total > best["projected_total"]:
-            xi_ids = {p["player_id"] for p in xi}
-            bench = [p for p in projections if p["player_id"] not in xi_ids]
-            bench.sort(key=lambda p: p["score"], reverse=True)
-            captain = max(xi, key=lambda p: p["score"])
-            best = {
-                "formation": label, "projected_total": total,
-                "starting_xi": xi, "bench": bench, "suggested_captain": captain,
-            }
+        xi_ids = {p["player_id"] for p in xi}
+        bench = [p for p in projections if p["player_id"] not in xi_ids]
+        bench.sort(key=lambda p: p["score"], reverse=True)
+        captain = max(xi, key=lambda p: p["score"])
 
-    comparisons.sort(key=lambda c: c["projected_total"], reverse=True)
-    if best:
-        best["all_formations"] = comparisons
-    return best or {"formation": None, "reason": "Not enough players in each position yet."}
+        all_formations.append({
+            "formation": label, "projected_total": total,
+            "starting_xi": xi, "bench": bench, "suggested_captain": captain,
+        })
+
+    if not all_formations:
+        return {"formation": None, "reason": "Not enough players in each position yet."}
+
+    all_formations.sort(key=lambda c: c["projected_total"], reverse=True)
+    best = dict(all_formations[0])
+    best["all_formations"] = all_formations
+    return best
 
 
 def get_squad_team_ids(entry_id: int) -> list[int]:
