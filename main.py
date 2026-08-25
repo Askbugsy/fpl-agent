@@ -82,11 +82,15 @@ def main():
         print(f"  {p['name']:<20} {pos:<4} £{p['price']:<5} value={p['value_score']}")
 
     print("\n=== Captain suggestions (form x fixture favourability) ===")
-    for c in get_captain_suggestions(TEAM_ID, limit=5):
+    captain_picks = get_captain_suggestions(TEAM_ID, limit=5)
+    for i, c in enumerate(captain_picks):
+        role = " (C)" if i == 0 else " (VC)" if i == 1 else ""
         venue = "H" if c["is_home"] else "A" if c["is_home"] is not None else "?"
         opp = c["opponent"] or "?"
         diff = c["difficulty"] or "?"
-        print(f"  {c['name']:<20} vs {opp} ({venue}, FDR {diff})  form={c['form']}  score={c['score']}")
+        print(f"  {c['name']:<20}{role:<5} vs {opp} ({venue}, FDR {diff})  form={c['form']}  score={c['score']}")
+    if len(captain_picks) >= 2:
+        print(f"  If {captain_picks[0]['name']} doesn't register a score, the armband passes to {captain_picks[1]['name']}.")
 
     print("\n=== Chip timing ===")
     chips = get_chip_suggestions(TEAM_ID)
@@ -110,6 +114,8 @@ def main():
     if formation.get("formation"):
         print(f"  Best shape: {formation['formation']}  (projected {formation['projected_total']} pts)")
         print(f"  Suggested captain: {formation['suggested_captain']['name']}")
+        if formation.get("suggested_vice_captain"):
+            print(f"  Suggested vice-captain: {formation['suggested_vice_captain']['name']}")
         print("  All formations compared:")
         for c in formation["all_formations"]:
             print(f"    {c['formation']:<8} {c['projected_total']} pts")
