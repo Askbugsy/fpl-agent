@@ -1,5 +1,5 @@
 """
-fpl_client.py
+src/fpl_client.py
 -------------
 Thin wrapper around the official Fantasy Premier League API.
 No API key needed - it's public. Two endpoints matter for us:
