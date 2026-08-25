@@ -256,8 +256,7 @@ def build_html() -> str:
       <button class="toggle-btn" data-metric="selected_by_percent">Own%</button>
       <button class="toggle-btn" data-metric="price_change">Price &Delta;</button>
     </div>
-    <div class="squad-list" id="squadStartersList"><strong>Starting XI</strong></div>
-    <div class="squad-list" id="squadBenchList"><strong>Bench</strong></div>
+    <div class="pitch" id="squadPitch"></div>
     '''}
   </div>
 
@@ -470,7 +469,7 @@ function selectFormation(label) {{
 if (bestFormationLabel) selectFormation(bestFormationLabel);
 
 const SQUAD_METRICS = {{
-  points: {{ label: 'Pts', value: (r, isBench) => isBench ? (r.gw_points || 0) : (r.gw_points || 0) * r.multiplier }},
+  points: {{ label: 'Pts', value: r => r.multiplier > 0 ? (r.gw_points || 0) * r.multiplier : (r.gw_points || 0) }},
   opponent: {{ label: 'Opp', value: r => r.opponent || '-' }},
   price: {{ label: 'Price', value: r => `£${{r.price}}m` }},
   selling_price: {{ label: 'Selling', value: r => r.selling_price != null ? `£${{r.selling_price}}m` : '-' }},
@@ -485,25 +484,26 @@ const SQUAD_METRICS = {{
   }} }},
 }};
 
-function squadRowHTML(r, metric, isBench) {{
+const SQUAD_POS_ORDER = ['GK', 'DEF', 'MID', 'FWD'];
+
+function squadPitchPlayerHTML(r, metric) {{
   const m = SQUAD_METRICS[metric];
   const tag = r.is_captain ? ' (C)' : r.is_vice_captain ? ' (V)' : '';
   const photoUrl = `${{PLAYER_PHOTO_BASE}}/110x140/${{r.photo_code}}.png`;
   return `
-    <div class="squad-row${{isBench ? ' bench' : ''}}">
-      <img class="player-pic" src="${{photoUrl}}" onerror="this.style.display='none'" alt="">
-      <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>
-      <span class="pos-tag">${{r.position}}</span>${{tag}} &mdash; ${{m.label}} ${{m.value(r, isBench)}}
+    <div class="pitch-player${{r.is_captain ? ' is-captain' : ''}}">
+      <img class="pitch-pic" src="${{photoUrl}}" onerror="this.style.display='none'" alt="">
+      <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>${{tag}}<br>
+      <span class="pitch-score">${{m.label}} ${{m.value(r)}}</span>
     </div>`;
 }}
 
-function renderSquadLists(metric) {{
-  const starters = squad.filter(r => r.multiplier > 0);
-  const bench = squad.filter(r => r.multiplier === 0);
-  document.getElementById('squadStartersList').innerHTML =
-    '<strong>Starting XI</strong>' + starters.map(r => squadRowHTML(r, metric, false)).join('');
-  document.getElementById('squadBenchList').innerHTML =
-    '<strong>Bench</strong>' + bench.map(r => squadRowHTML(r, metric, true)).join('');
+function renderSquadPitch(metric) {{
+  const byPos = {{GK: [], DEF: [], MID: [], FWD: []}};
+  squad.forEach(r => {{ if (byPos[r.position]) byPos[r.position].push(r); }});
+  document.getElementById('squadPitch').innerHTML = SQUAD_POS_ORDER.map(pos =>
+    `<div class="pitch-row">${{byPos[pos].map(r => squadPitchPlayerHTML(r, metric)).join('')}}</div>`
+  ).join('');
 }}
 
 const squadToggle = document.getElementById('squadToggle');
@@ -512,12 +512,12 @@ if (squadToggle) {{
     btn.addEventListener('click', () => {{
       squadToggle.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      renderSquadLists(btn.dataset.metric);
+      renderSquadPitch(btn.dataset.metric);
     }});
   }});
 }}
 
-if (squad.length) renderSquadLists('points');
+if (squad.length) renderSquadPitch('points');
 </script>
 </body>
 </html>"""
