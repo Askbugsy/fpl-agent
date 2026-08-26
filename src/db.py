@@ -904,6 +904,14 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
             (p["player_id"], CURRENT_SEASON),
         ).fetchall()
 
+        season_history = conn.execute(
+            """SELECT season, total_points, minutes, goals_scored, assists
+               FROM player_gw_history
+               WHERE player_id = ? AND season != ? AND gameweek IS NULL
+               ORDER BY season DESC""",
+            (p["player_id"], CURRENT_SEASON),
+        ).fetchall()
+
         profiles[p["player_id"]] = {
             "name": p["name"], "full_name": p["full_name"] or p["name"],
             "team": p["team"], "position": p["position"],
@@ -913,6 +921,7 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
             "status": p["status"], "status_label": STATUS_LABELS.get(p["status"], "Available"),
             "chance_of_playing": p["chance_of_playing"], "news": p["news"],
             "gw_history": [dict(h) for h in history],
+            "season_history": [dict(h) for h in season_history],
         }
 
     conn.close()
