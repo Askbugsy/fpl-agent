@@ -345,13 +345,32 @@ def build_html() -> str:
   '''}
 
   <div class="tabs" id="tabBar">
-    <button class="tab-btn active" data-tab="today">Today</button>
-    <button class="tab-btn" data-tab="squad">Squad</button>
+    <button class="tab-btn active" data-tab="squad">Squad</button>
+    <button class="tab-btn" data-tab="today">Recommendations</button>
     <button class="tab-btn" data-tab="moves">Moves</button>
     <button class="tab-btn" data-tab="explore">Explore</button>
   </div>
 
-  <div class="tab-panel active" id="tab-today">
+  <div class="tab-panel active" id="tab-squad">
+    <div class="card">
+      <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
+      {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else '''
+      <div class="toggle-row" id="squadToggle">
+        <button class="toggle-btn active" data-metric="points">Points</button>
+        <button class="toggle-btn" data-metric="opponent">Opponent</button>
+        <button class="toggle-btn" data-metric="price">Price</button>
+        <button class="toggle-btn" data-metric="selling_price">Selling</button>
+        <button class="toggle-btn" data-metric="difficulty">FDR</button>
+        <button class="toggle-btn" data-metric="form">Form</button>
+        <button class="toggle-btn" data-metric="selected_by_percent">Own%</button>
+        <button class="toggle-btn" data-metric="price_change">Price &Delta;</button>
+      </div>
+      <div class="pitch" id="squadPitch"></div>
+      '''}
+    </div>
+  </div>
+
+  <div class="tab-panel" id="tab-today">
     <div class="card">
       <h2>Manager Stats &mdash; Gameweek {manager_stats.get('gameweek', '?')}</h2>
       {"<p>No manager data yet.</p>" if not manager_stats else f'''
@@ -382,25 +401,6 @@ def build_html() -> str:
           for i, c in enumerate(captain_picks)
       )}
       {vice_backup_note}
-    </div>
-  </div>
-
-  <div class="tab-panel" id="tab-squad">
-    <div class="card">
-      <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
-      {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else '''
-      <div class="toggle-row" id="squadToggle">
-        <button class="toggle-btn active" data-metric="points">Points</button>
-        <button class="toggle-btn" data-metric="opponent">Opponent</button>
-        <button class="toggle-btn" data-metric="price">Price</button>
-        <button class="toggle-btn" data-metric="selling_price">Selling</button>
-        <button class="toggle-btn" data-metric="difficulty">FDR</button>
-        <button class="toggle-btn" data-metric="form">Form</button>
-        <button class="toggle-btn" data-metric="selected_by_percent">Own%</button>
-        <button class="toggle-btn" data-metric="price_change">Price &Delta;</button>
-      </div>
-      <div class="pitch" id="squadPitch"></div>
-      '''}
     </div>
   </div>
 
