@@ -402,6 +402,13 @@ def build_html() -> str:
       )}
       {vice_backup_note}
     </div>
+
+    <div class="card">
+      <h2>Chip Timing <span class="subtitle">(double/blank gameweek detection)</span></h2>
+      <div class="squad-row">🎯 <strong>Triple Captain / Bench Boost:</strong> {chip_advice['triple_captain_bench_boost']}</div>
+      <div class="squad-row">🃏 <strong>Free Hit:</strong> {chip_advice['free_hit']}</div>
+      <div class="squad-row bench">Wildcard timing isn't scored here &mdash; that call depends on broader squad health and fixture swings, better discussed directly.</div>
+    </div>
   </div>
 
   <div class="tab-panel" id="tab-moves">
@@ -412,13 +419,6 @@ def build_html() -> str:
       <strong class="block-label" style="font-family:'Fraunces',serif;font-size:1rem;">Watchlist <span class="subtitle">(1 data-driven + 1 yours, per position)</span></strong>
       <p class="subtitle">Incoming transfer candidates &mdash; who the data likes, and who you're personally tracking.</p>
       {render_watchlist_card(watchlist)}
-    </div>
-
-    <div class="card">
-      <h2>Chip Timing <span class="subtitle">(double/blank gameweek detection)</span></h2>
-      <div class="squad-row">🎯 <strong>Triple Captain / Bench Boost:</strong> {chip_advice['triple_captain_bench_boost']}</div>
-      <div class="squad-row">🃏 <strong>Free Hit:</strong> {chip_advice['free_hit']}</div>
-      <div class="squad-row bench">Wildcard timing isn't scored here &mdash; that call depends on broader squad health and fixture swings, better discussed directly.</div>
     </div>
 
     <div class="card">
