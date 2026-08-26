@@ -700,11 +700,20 @@ function openProfile(playerId) {{
   const photoUrl = `${{PLAYER_PHOTO_BASE}}/110x140/${{p.photo_code}}.png`;
   let gwRows = '';
   if (p.gw_history && p.gw_history.length) {{
-    gwRows = `<table class="modal-gw-table"><thead><tr><th>GW</th><th>Pts</th><th>Min</th><th>G</th><th>A</th></tr></thead><tbody>` +
+    gwRows = `<strong class="block-label" style="font-size:0.85rem;">This Season</strong>
+      <table class="modal-gw-table"><thead><tr><th>GW</th><th>Pts</th><th>Min</th><th>G</th><th>A</th></tr></thead><tbody>` +
       p.gw_history.map(h => `<tr><td>${{h.gameweek}}</td><td>${{h.total_points}}</td><td>${{h.minutes}}</td><td>${{h.goals_scored}}</td><td>${{h.assists}}</td></tr>`).join('') +
       `</tbody></table>`;
   }} else {{
     gwRows = `<p class="muted" style="font-size:0.85rem;">Gameweek-by-gameweek history not available yet &mdash; run the historical backfill to populate this.</p>`;
+  }}
+
+  let seasonRows = '';
+  if (p.season_history && p.season_history.length) {{
+    seasonRows = `<strong class="block-label" style="font-size:0.85rem;">Past Seasons</strong>
+      <table class="modal-gw-table"><thead><tr><th>Season</th><th>Pts</th><th>Min</th><th>G</th><th>A</th></tr></thead><tbody>` +
+      p.season_history.map(h => `<tr><td>${{h.season}}</td><td>${{h.total_points}}</td><td>${{h.minutes}}</td><td>${{h.goals_scored}}</td><td>${{h.assists}}</td></tr>`).join('') +
+      `</tbody></table>`;
   }}
 
   let statusHtml = '';
@@ -731,6 +740,7 @@ function openProfile(playerId) {{
       <div><span>Selected by</span><span>${{p.selected_by_percent}}%</span></div>
     </div>
     ${{gwRows}}
+    ${{seasonRows}}
   `;
   document.getElementById('profileModal').classList.add('open');
 }}
