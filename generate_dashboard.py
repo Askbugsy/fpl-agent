@@ -109,60 +109,36 @@ def render_watchlist_card(watchlist: dict) -> str:
 
 
 def render_formation_card(formation: dict) -> str:
+    """
+    Renders the comparison table server-side (so it's visible even if
+    JS fails to load) but leaves the pitch/bench/summary as empty
+    placeholders - selectFormation() in the <script> block below fills
+    those in from the embedded per-formation JSON, and swaps them
+    again whenever a comparison row is clicked. Keeps the actual
+    pitch-building logic (photos, captain/vice tags, status dots) in
+    exactly one place (JS) instead of duplicating it between Python
+    and JS.
+    """
     if not formation.get("formation"):
         return f'<p>{formation.get("reason", "Not enough data yet.")}</p>'
 
-    xi_by_pos = {1: [], 2: [], 3: [], 4: []}
-    for p in formation["starting_xi"]:
-        xi_by_pos[p["position"]].append(p)
+    def comparison_row(c: dict) -> str:
+        is_best = c["formation"] == formation["formation"]
+        best_tag = ' <span class="best-tag">Recommended</span>' if is_best else ""
+        return (
+            f'<div class="formation-compare-row{" best" if is_best else ""}" '
+            f'data-formation="{c["formation"]}" onclick="selectFormation(\'{c["formation"]}\')">'
+            f'{c["formation"]} &mdash; {c["projected_total"]} pts{best_tag}</div>'
+        )
 
-    captain_id = formation["suggested_captain"]["player_id"]
-    vice = formation.get("suggested_vice_captain")
-    vice_id = vice["player_id"] if vice else None
-
-    def pitch_row(players):
-        def cell(p):
-            is_captain = p["player_id"] == captain_id
-            is_vice = p["player_id"] == vice_id
-            role_cls = " is-captain" if is_captain else " is-vice-captain" if is_vice else ""
-            role_tag = " (C)" if is_captain else " (VC)" if is_vice else ""
-            return (
-                f'<div class="pitch-player{role_cls}">'
-                f'{player_link(p["player_id"], p["name"])}<br><span class="pitch-score">{p["score"]}{role_tag}</span>'
-                f'</div>'
-            )
-        cells = "".join(cell(p) for p in players)
-        return f'<div class="pitch-row">{cells}</div>'
-
-    comparison_rows = "".join(
-        f'<div class="formation-compare-row{" best" if c["formation"] == formation["formation"] else ""}">'
-        f'{c["formation"]} &mdash; {c["projected_total"]} pts</div>'
-        for c in formation["all_formations"]
-    )
-
-    bench_html = "".join(
-        f'<div class="squad-row bench">{player_link(p["player_id"], p["name"])} '
-        f'<span class="pos-tag">{POSITION_NAMES.get(p["position"], "?")}</span> &mdash; score {p["score"]}</div>'
-        for p in formation["bench"]
-    )
-
-    vice_line = (
-        f', vice-captain <strong>{player_link(vice["player_id"], vice["name"])}</strong>'
-        if vice else ""
-    )
+    comparison_rows = "".join(comparison_row(c) for c in formation["all_formations"])
 
     return f'''
-    <p><strong>Recommended: {formation["formation"]}</strong> &mdash; projected {formation["projected_total"]} pts,
-       captain <strong>{player_link(formation["suggested_captain"]["player_id"], formation["suggested_captain"]["name"])}</strong>{vice_line}</p>
-    <div class="pitch">
-      {pitch_row(xi_by_pos[1])}
-      {pitch_row(xi_by_pos[2])}
-      {pitch_row(xi_by_pos[3])}
-      {pitch_row(xi_by_pos[4])}
-    </div>
+    <p id="formationSummary"></p>
+    <div class="pitch" id="formationPitch"></div>
     <div class="formation-compare">{comparison_rows}</div>
     <strong class="block-label">Bench</strong>
-    {bench_html}
+    <div id="formationBench"></div>
     '''
 
 
@@ -223,11 +199,15 @@ def build_html() -> str:
     next_deadline = get_next_deadline()
     watchlist = get_watchlist(MY_WATCHLIST)
 
+    formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
+
     movers_json = json.dumps(movers)
     value_json = json.dumps(value_picks)
     table_json = json.dumps(full_table)
     profiles_json = json.dumps(profiles)
     squad_json = json.dumps(squad)
+    formations_json = json.dumps(formations_by_label)
+    best_formation_json = json.dumps(formation.get("formation"))
     photo_base_json = json.dumps(PLAYER_PHOTO_BASE)
     photo_legacy_base_json = json.dumps(PLAYER_PHOTO_LEGACY_BASE)
     photo_fallback_json = json.dumps(PLAYER_PHOTO_FALLBACK)
@@ -292,10 +272,9 @@ def build_html() -> str:
 
   .squad-row {{ padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem;
                 display: flex; align-items: center; gap: 8px; }}
-  .player-pic {{ width: 32px; height: 40px; object-fit: cover; border-radius: 6px; background: var(--clay-tint); flex-shrink: 0; }}
+  .player-pic {{ width: 32px; height: 40px; object-fit: cover; border-radius: 6px; background: transparent; flex-shrink: 0; }}
   .squad-row.bench {{ color: var(--ink-soft); }}
   .pos-tag {{ color: var(--clay); font-size: 0.72rem; font-weight: 600; }}
-  .squad-list strong {{ display: block; margin: 12px 0 4px; font-family: "Fraunces", serif; }}
 
   .transfer-card {{ border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; font-size: 0.9rem; }}
   .urgency-badge {{ display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; color: #fff; margin-right: 6px; }}
@@ -312,7 +291,7 @@ def build_html() -> str:
   .modal-content {{ background: var(--surface); border-radius: 16px; padding: 20px; max-width: 400px;
                      width: 100%; max-height: 80vh; overflow-y: auto; }}
   .modal-header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }}
-  .modal-header img {{ width: 56px; height: 70px; object-fit: cover; border-radius: 8px; background: var(--clay-tint); }}
+  .modal-header img {{ width: 56px; height: 70px; object-fit: cover; border-radius: 8px; background: transparent; }}
   .modal-header strong {{ font-family: "Fraunces", serif; font-size: 1.1rem; }}
   .modal-close {{ float: right; cursor: pointer; color: var(--ink-soft); font-size: 1.3rem; }}
   .modal-stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 0.85rem; margin: 12px 0; }}
@@ -325,10 +304,14 @@ def build_html() -> str:
   .pitch-player {{ background: rgba(255,255,255,0.92); border-radius: 8px; padding: 5px 9px; text-align: center; font-size: 0.75rem; min-width: 62px; }}
   .pitch-player.is-captain {{ border: 2px solid var(--clay); }}
   .pitch-player.is-vice-captain {{ border: 2px dashed var(--ink-soft); }}
+  .pitch-pic {{ width: 40px; height: 50px; object-fit: cover; border-radius: 6px; background: transparent; display: block; margin: 0 auto 4px; }}
   .pitch-score {{ color: var(--ink-soft); font-size: 0.7rem; }}
   .formation-compare {{ margin-top: 12px; font-size: 0.8rem; }}
-  .formation-compare-row {{ padding: 3px 0; color: var(--ink-soft); }}
+  .formation-compare-row {{ padding: 5px 8px; color: var(--ink-soft); cursor: pointer; border-radius: 6px; border: 1px solid transparent; }}
+  .formation-compare-row:hover {{ background: var(--clay-tint); }}
   .formation-compare-row.best {{ color: var(--good); font-weight: 700; }}
+  .formation-compare-row.selected {{ border-color: var(--clay); background: var(--clay-tint); }}
+  .best-tag {{ font-size: 0.65rem; font-weight: 700; color: #fff; background: var(--good); border-radius: 8px; padding: 1px 8px; margin-left: 4px; }}
 
   .toggle-row {{ display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }}
   .toggle-btn {{ background: var(--bg); border: 1px solid var(--border); color: var(--ink-soft); border-radius: 8px;
@@ -416,8 +399,7 @@ def build_html() -> str:
         <button class="toggle-btn" data-metric="selected_by_percent">Own%</button>
         <button class="toggle-btn" data-metric="price_change">Price &Delta;</button>
       </div>
-      <div class="squad-list" id="squadStartersList"><strong>Starting XI</strong></div>
-      <div class="squad-list" id="squadBenchList"><strong>Bench</strong></div>
+      <div class="pitch" id="squadPitch"></div>
       '''}
     </div>
   </div>
@@ -492,9 +474,12 @@ const valuePicks = {value_json};
 const fullTable = {table_json};
 const playerProfiles = {profiles_json};
 const squadData = {squad_json};
+const allFormations = {formations_json};
+const bestFormationLabel = {best_formation_json};
 const PLAYER_PHOTO_BASE = {photo_base_json};
 const PLAYER_PHOTO_LEGACY_BASE = {photo_legacy_base_json};
 const PLAYER_PHOTO_FALLBACK = {photo_fallback_json};
+const POS_NAMES = {{1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}};
 
 // Current-season photo first (correct kit when it exists); if that 403s,
 // fall back to the legacy bucket (a real photo, but can be a stale/wrong
@@ -513,57 +498,121 @@ document.getElementById('tabBar').addEventListener('click', (e) => {{
   document.getElementById('tab-' + e.target.dataset.tab).classList.add('active');
 }});
 
-function metricLabel(r, metric) {{
-  switch (metric) {{
-    case 'points': return `${{(r.gw_points || 0) * (r.multiplier || 1)}} pts`;
-    case 'opponent': return r.opponent || '-';
-    case 'price': return `£${{r.price}}m`;
-    case 'selling_price': return `£${{r.selling_price ?? r.price}}m`;
-    case 'difficulty': return r.difficulty ? `FDR ${{r.difficulty}}` : '-';
-    case 'form': return r.form ?? '-';
-    case 'selected_by_percent': return `${{r.selected_by_percent}}%`;
-    case 'price_change':
-      if (!r.price_change) return '£0.0m';
-      return (r.price_change > 0 ? '+' : '') + `£${{r.price_change}}m`;
-    default: return '';
+function statusDotHTML(status, news) {{
+  if (status === 'i' || status === 's' || status === 'u' || status === 'n') {{
+    return `<span class="status-badge status-red" title="${{news || ''}}">&#9679;</span>`;
   }}
-}}
-
-function renderSquadRow(r, metric, isBench) {{
-  const photoUrl = `${{PLAYER_PHOTO_BASE}}/110x140/${{r.photo_code}}.png`;
-  const tag = r.is_captain ? ' (C)' : r.is_vice_captain ? ' (V)' : '';
-  let statusBadge = '';
-  if (r.status === 'i' || r.status === 's' || r.status === 'u' || r.status === 'n') {{
-    statusBadge = `<span class="status-badge status-red" title="${{r.news || ''}}">&#9679;</span>`;
-  }} else if (r.status === 'd') {{
-    statusBadge = `<span class="status-badge status-amber" title="${{r.news || ''}}">&#9679;</span>`;
+  if (status === 'd') {{
+    return `<span class="status-badge status-amber" title="${{news || ''}}">&#9679;</span>`;
   }}
-  return `<div class="squad-row${{isBench ? ' bench' : ''}}">
-    <img class="player-pic" src="${{photoUrl}}" onerror="${{photoOnErrorAttr(r.photo_code)}}" alt="">
-    ${{statusBadge}}
-    <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>
-    <span class="pos-tag">${{r.position}}</span>${{tag}} &mdash; ${{metricLabel(r, metric)}}
-  </div>`;
+  return '';
 }}
 
-function renderSquad(metric) {{
-  const starters = squadData.filter(r => r.multiplier > 0);
-  const bench = squadData.filter(r => r.multiplier === 0);
-  document.getElementById('squadStartersList').innerHTML = '<strong>Starting XI</strong>' +
-    starters.map(r => renderSquadRow(r, metric, false)).join('');
-  document.getElementById('squadBenchList').innerHTML = '<strong>Bench</strong>' +
-    bench.map(r => renderSquadRow(r, metric, true)).join('');
+function pitchPhotoUrl(photoCode) {{
+  return `${{PLAYER_PHOTO_BASE}}/110x140/${{photoCode}}.png`;
 }}
 
-if (squadData.length) {{
-  renderSquad('points');
-  document.getElementById('squadToggle').addEventListener('click', (e) => {{
-    if (!e.target.classList.contains('toggle-btn')) return;
-    document.querySelectorAll('#squadToggle .toggle-btn').forEach(b => b.classList.remove('active'));
-    e.target.classList.add('active');
-    renderSquad(e.target.dataset.metric);
+function buildPitchHTML(xi, captainId, viceCaptainId) {{
+  const byPos = {{1: [], 2: [], 3: [], 4: []}};
+  xi.forEach(p => byPos[p.position].push(p));
+  return [1, 2, 3, 4].map(pos => {{
+    const cells = byPos[pos].map(p => {{
+      const isCaptain = p.player_id === captainId;
+      const isVice = p.player_id === viceCaptainId;
+      return `
+      <div class="pitch-player${{isCaptain ? ' is-captain' : isVice ? ' is-vice-captain' : ''}}">
+        <img class="pitch-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
+        ${{statusDotHTML(p.status)}}
+        <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span><br>
+        <span class="pitch-score">${{p.score}}${{isCaptain ? ' (C)' : isVice ? ' (VC)' : ''}}</span>
+      </div>`;
+    }}).join('');
+    return `<div class="pitch-row">${{cells}}</div>`;
+  }}).join('');
+}}
+
+function buildBenchHTML(bench) {{
+  return bench.map(p => `
+    <div class="squad-row bench">
+      <img class="player-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
+      ${{statusDotHTML(p.status)}}
+      <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span>
+      <span class="pos-tag">${{POS_NAMES[p.position] || '?'}}</span> &mdash; score ${{p.score}}
+    </div>`).join('');
+}}
+
+function selectFormation(label) {{
+  const f = allFormations[label];
+  if (!f) return;
+
+  const isBest = label === bestFormationLabel;
+  const viceHTML = f.suggested_vice_captain
+    ? ` &mdash; vice-captain <strong><span class="player-link" onclick="openProfile(${{f.suggested_vice_captain.player_id}})">${{f.suggested_vice_captain.name}}</span></strong> (steps up if the captain doesn't register a score)`
+    : '';
+  document.getElementById('formationSummary').innerHTML =
+    `<strong>${{isBest ? 'Recommended' : 'Selected'}}: ${{f.formation}}</strong> &mdash; projected ${{f.projected_total}} pts, ` +
+    `captain <strong><span class="player-link" onclick="openProfile(${{f.suggested_captain.player_id}})">${{f.suggested_captain.name}}</span></strong>${{viceHTML}}`;
+  document.getElementById('formationPitch').innerHTML = buildPitchHTML(f.starting_xi, f.suggested_captain.player_id, f.suggested_vice_captain ? f.suggested_vice_captain.player_id : null);
+  document.getElementById('formationBench').innerHTML = buildBenchHTML(f.bench);
+
+  document.querySelectorAll('.formation-compare-row').forEach(el => {{
+    el.classList.toggle('selected', el.dataset.formation === label);
   }});
 }}
+
+if (bestFormationLabel) selectFormation(bestFormationLabel);
+
+const SQUAD_METRICS = {{
+  points: {{ label: 'Pts', value: r => r.multiplier > 0 ? (r.gw_points || 0) * r.multiplier : (r.gw_points || 0) }},
+  opponent: {{ label: 'Opp', value: r => r.opponent || '-' }},
+  price: {{ label: 'Price', value: r => `£${{r.price}}m` }},
+  selling_price: {{ label: 'Selling', value: r => r.selling_price != null ? `£${{r.selling_price}}m` : '-' }},
+  difficulty: {{ label: 'FDR', value: r => r.difficulty != null ? r.difficulty : '-' }},
+  form: {{ label: 'Form', value: r => r.form }},
+  selected_by_percent: {{ label: 'Own%', value: r => `${{r.selected_by_percent}}%` }},
+  price_change: {{ label: 'Price Δ', value: r => {{
+    if (r.price_change == null) return '-';
+    if (r.price_change > 0) return `+£${{r.price_change}}m`;
+    if (r.price_change < 0) return `-£${{Math.abs(r.price_change)}}m`;
+    return '£0.0m';
+  }} }},
+}};
+
+const SQUAD_POS_ORDER = ['GK', 'DEF', 'MID', 'FWD'];
+
+function squadPitchPlayerHTML(r, metric) {{
+  const m = SQUAD_METRICS[metric];
+  const tag = r.is_captain ? ' (C)' : r.is_vice_captain ? ' (V)' : '';
+  const photoUrl = `${{PLAYER_PHOTO_BASE}}/110x140/${{r.photo_code}}.png`;
+  return `
+    <div class="pitch-player${{r.is_captain ? ' is-captain' : ''}}">
+      <img class="pitch-pic" src="${{photoUrl}}" onerror="${{photoOnErrorAttr(r.photo_code)}}" alt="">
+      ${{statusDotHTML(r.status, r.news)}}
+      <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>${{tag}}<br>
+      <span class="pitch-score">${{m.label}} ${{m.value(r)}}</span>
+    </div>`;
+}}
+
+function renderSquadPitch(metric) {{
+  const byPos = {{GK: [], DEF: [], MID: [], FWD: []}};
+  squadData.forEach(r => {{ if (byPos[r.position]) byPos[r.position].push(r); }});
+  document.getElementById('squadPitch').innerHTML = SQUAD_POS_ORDER.map(pos =>
+    `<div class="pitch-row">${{byPos[pos].map(r => squadPitchPlayerHTML(r, metric)).join('')}}</div>`
+  ).join('');
+}}
+
+const squadToggle = document.getElementById('squadToggle');
+if (squadToggle) {{
+  squadToggle.querySelectorAll('.toggle-btn').forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      squadToggle.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderSquadPitch(btn.dataset.metric);
+    }});
+  }});
+}}
+
+if (squadData.length) renderSquadPitch('points');
 
 const CLAY = '#C1613C', GOOD = '#5B7B4F', BAD = '#B0402A';
 
@@ -643,8 +692,6 @@ document.getElementById('positionFilter').querySelectorAll('.toggle-btn').forEac
 }});
 
 applyTableFilterAndSort();
-
-const POS_NAMES = {{1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}};
 
 function openProfile(playerId) {{
   const p = playerProfiles[playerId];
