@@ -20,8 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline
-from config import TEAM_ID
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist
+from config import TEAM_ID, MY_WATCHLIST
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
@@ -126,6 +126,22 @@ def main():
     if deadline:
         print(f"\n=== Next deadline ===")
         print(f"  Gameweek {deadline['gameweek']}: {deadline['deadline_time']}")
+
+    print("\n=== Watchlist ===")
+    watchlist = get_watchlist(MY_WATCHLIST)
+    for pos, picks in watchlist.items():
+        dd = picks["data_driven"]
+        if dd and dd["form_change"] is not None:
+            print(f"  {pos} - Data-driven: {dd['name']} (form {dd['form_change']:+.1f}, price {dd['price_change']:+.1f}m)")
+        else:
+            print(f"  {pos} - Data-driven: {dd['name'] if dd else 'n/a'}")
+        m = picks["manual"]
+        if m and m.get("found") is False:
+            print(f"       Your pick: '{m['name']}' not found - check the name in config.py")
+        elif m:
+            print(f"       Your pick: {m['name']}")
+        else:
+            print(f"       Your pick: not set")
 
 
 if __name__ == "__main__":
