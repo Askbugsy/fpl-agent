@@ -337,11 +337,6 @@ def build_html() -> str:
   </div>
 
   <div class="card">
-    <h2>Watchlist <span class="subtitle">(1 data-driven + 1 yours, per position)</span></h2>
-    {render_watchlist_card(watchlist)}
-  </div>
-
-  <div class="card">
     <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
     {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else '''
     <div class="toggle-row" id="squadToggle">
@@ -384,6 +379,10 @@ def build_html() -> str:
     <h2>Transfers</h2>
     <p class="section-note">Squad players worth considering moving on, based on form and price trend.</p>
     {"<p>No players flagged - either everything's stable, or only one snapshot exists so far (trends need two).</p>" if not transfer_suggestions else "".join(render_transfer_suggestion(t) for t in transfer_suggestions)}
+
+    <h3>Watchlist <span class="subtitle">(1 data-driven + 1 yours, per position)</span></h3>
+    <p class="section-note">Incoming transfer candidates - who the data likes, and who you're personally tracking.</p>
+    {render_watchlist_card(watchlist)}
 
     <h3>Movers &amp; Shakers <span class="subtitle">(form change since last week)</span></h3>
     <p class="section-note">The wider form swings behind the suggestions above.</p>
