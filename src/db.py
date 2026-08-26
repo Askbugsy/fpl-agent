@@ -26,6 +26,11 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent.parent / "data" / "fpl.db"
 CURRENT_SEASON = "2026/27"  # matches backfill_history.py - used to pull this season's gw history
 
+STATUS_LABELS = {
+    "a": "Available", "d": "Doubtful", "i": "Injured",
+    "s": "Suspended", "u": "Unavailable", "n": "Not available",
+}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS player_snapshots (
     player_id INTEGER NOT NULL,
@@ -41,6 +46,9 @@ CREATE TABLE IF NOT EXISTS player_snapshots (
     selected_by_percent REAL NOT NULL,
     photo_code INTEGER,
     full_name TEXT,
+    status TEXT,                    -- 'a'=available 'd'=doubtful 'i'=injured 's'=suspended 'u'/'n'=unavailable
+    chance_of_playing INTEGER,      -- 0-100, FPL's own estimate for the next match
+    news TEXT,                      -- free-text injury/news note, written by FPL's editorial team
     PRIMARY KEY (player_id, snapshot_date)
 );
 
@@ -121,6 +129,9 @@ def get_connection() -> sqlite3.Connection:
         "ALTER TABLE squad_picks ADD COLUMN purchase_price REAL",
         "ALTER TABLE entry_summary ADD COLUMN gw_rank INTEGER",
         "ALTER TABLE player_snapshots ADD COLUMN full_name TEXT",
+        "ALTER TABLE player_snapshots ADD COLUMN status TEXT",
+        "ALTER TABLE player_snapshots ADD COLUMN chance_of_playing INTEGER",
+        "ALTER TABLE player_snapshots ADD COLUMN news TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -143,6 +154,7 @@ def save_snapshot(players: list[dict]) -> str:
             p["now_cost"] / 10, p["total_points"], float(p["form"]),
             float(p["points_per_game"]), p["minutes"], float(p["selected_by_percent"]),
             p["code"], f"{p['first_name']} {p['second_name']}".strip(),
+            p.get("status"), p.get("chance_of_playing_next_round"), p.get("news") or None,
         )
         for p in players
     ]
@@ -151,8 +163,8 @@ def save_snapshot(players: list[dict]) -> str:
         """INSERT OR REPLACE INTO player_snapshots
            (player_id, snapshot_date, name, team, position, price,
             total_points, form, points_per_game, minutes, selected_by_percent,
-            photo_code, full_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            photo_code, full_name, status, chance_of_playing, news)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -356,7 +368,7 @@ def get_latest_squad(entry_id: int) -> list[dict]:
         SELECT sp.player_id, sp.squad_position, sp.multiplier, sp.is_captain,
                sp.is_vice_captain, sp.gw_points, sp.selling_price,
                ps.name, ps.position, ps.price, ps.photo_code, ps.team,
-               ps.form, ps.selected_by_percent
+               ps.form, ps.selected_by_percent, ps.status, ps.chance_of_playing, ps.news
         FROM squad_picks sp
         JOIN player_snapshots ps
           ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
@@ -450,10 +462,15 @@ def get_squad_player_projections(entry_id: int, min_minutes: int = 0) -> list[di
     formation optimizer below, so the two features can never
     silently drift out of sync with different formulas.
 
-    score = form * (6 - difficulty) / 5
-    Easy fixture (difficulty 1) -> multiplier 1.0
-    Hard fixture (difficulty 5) -> multiplier 0.2
-    No fixture data yet -> falls back to form alone (multiplier 1.0)
+    score = form * (6 - difficulty) / 5   ...then scaled by availability:
+      - Injured/suspended/unavailable -> score forced to 0 (can't play, so
+        can't score, no matter how good their form was before)
+      - Doubtful -> score scaled by FPL's own "chance of playing" percentage
+      - Available -> unchanged
+
+    This means both get_captain_suggestions and get_optimal_formation
+    automatically stop recommending unavailable players, without
+    either of them needing their own separate injury-checking logic.
     """
     conn = get_connection()
     conn.row_factory = sqlite3.Row
@@ -470,7 +487,7 @@ def get_squad_player_projections(entry_id: int, min_minutes: int = 0) -> list[di
 
     players = conn.execute(
         """SELECT sp.multiplier, ps.player_id, ps.name, ps.team, ps.position,
-                  ps.form, ps.price, ps.photo_code
+                  ps.form, ps.price, ps.photo_code, ps.status, ps.chance_of_playing
            FROM squad_picks sp
            JOIN player_snapshots ps ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
            WHERE sp.entry_id = ? AND sp.gameweek = ? AND ps.minutes >= ?""",
@@ -496,6 +513,14 @@ def get_squad_player_projections(entry_id: int, min_minutes: int = 0) -> list[di
         fixture_multiplier = (6 - difficulty) / 5 if difficulty else 1.0
         score = round(p["form"] * fixture_multiplier, 2)
 
+        # Availability adjustment - an injured player's form is irrelevant
+        # if they physically can't take the pitch.
+        if p["status"] in ("i", "s", "u", "n"):
+            score = 0.0
+        elif p["status"] == "d":
+            chance = p["chance_of_playing"] if p["chance_of_playing"] is not None else 50
+            score = round(score * (chance / 100), 2)
+
         opponent_name = None
         if opponent_id:
             row = conn.execute(
@@ -507,6 +532,7 @@ def get_squad_player_projections(entry_id: int, min_minutes: int = 0) -> list[di
             "player_id": p["player_id"], "name": p["name"], "position": p["position"],
             "form": p["form"], "price": p["price"], "photo_code": p["photo_code"],
             "multiplier": p["multiplier"], "difficulty": difficulty,
+            "status": p["status"], "chance_of_playing": p["chance_of_playing"],
             "opponent": opponent_name, "is_home": is_home, "score": score,
         })
 
@@ -718,17 +744,22 @@ def get_chip_suggestions(entry_id: int) -> dict:
 def get_transfer_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 60) -> list[dict]:
     """
     Flags squad players worth considering transferring out, based on
-    two objective signals compared to the previous snapshot:
+    three signals:
 
       - Falling price (a strong community signal others are selling)
       - Falling form (recent performance trending down)
+      - Injury/availability status, straight from FPL's own data
+        (doubtful/injured/suspended/unavailable)
 
-    urgency_score = (form drop x 2) + (price drop x 10)
+    urgency_score = (form drop x 2) + (price drop x 10) + injury_urgency
     Price drop is weighted heavily since a falling price is a costly,
-    hard-to-reverse signal - once it falls, that value is gone.
+    hard-to-reverse signal. Injury status is weighted heavily too,
+    but scaled by how uncertain FPL's own "chance of playing" estimate
+    is for a doubtful player - a 75% chance is a much softer flag
+    than a 25% chance.
 
     Tiers: score >= 5 -> High, >= 2 -> Medium, > 0 -> Low.
-    Players with neither signal aren't flagged at all.
+    Players with none of the three signals aren't flagged at all.
 
     For each flagged player, suggests up to 3 replacement candidates
     in the same position that you could genuinely afford - selling
@@ -761,7 +792,8 @@ def get_transfer_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 6
 
     squad = conn.execute(
         """SELECT sp.player_id, sp.selling_price, cur.name, cur.position, cur.team,
-                  cur.form AS current_form, cur.price AS current_price
+                  cur.form AS current_form, cur.price AS current_price,
+                  cur.status, cur.chance_of_playing, cur.news
            FROM squad_picks sp
            JOIN player_snapshots cur ON sp.player_id = cur.player_id AND cur.snapshot_date = ?
            WHERE sp.entry_id = ? AND sp.gameweek = ?""",
@@ -780,7 +812,21 @@ def get_transfer_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 6
 
         form_drop = max(0.0, prev["form"] - s["current_form"])
         price_drop = max(0.0, prev["price"] - s["current_price"])
-        urgency_score = round(form_drop * 2 + price_drop * 10, 1)
+
+        # Injury/availability signal - a genuinely unavailable player is a
+        # strong flag on its own; a "doubtful" one scales by how unlikely
+        # FPL itself thinks they are to play (lower chance = bigger flag).
+        injury_urgency = 0.0
+        injury_reason = None
+        if s["status"] in ("i", "s", "u", "n"):
+            injury_urgency = 8.0
+            injury_reason = STATUS_LABELS.get(s["status"], "Unavailable")
+        elif s["status"] == "d":
+            chance = s["chance_of_playing"] if s["chance_of_playing"] is not None else 50
+            injury_urgency = round((100 - chance) / 100 * 5, 1)
+            injury_reason = f"Doubtful ({chance}% chance of playing)"
+
+        urgency_score = round(form_drop * 2 + price_drop * 10 + injury_urgency, 1)
         if urgency_score <= 0:
             continue
 
@@ -801,7 +847,8 @@ def get_transfer_suggestions(entry_id: int, limit: int = 5, min_minutes: int = 6
         flagged.append({
             "player_id": s["player_id"], "name": s["name"], "position": s["position"], "urgency": tier,
             "urgency_score": urgency_score, "form_drop": round(form_drop, 1),
-            "price_drop": round(price_drop, 1), "budget_available": budget,
+            "price_drop": round(price_drop, 1), "injury_reason": injury_reason,
+            "budget_available": budget,
             "candidates": [dict(c) for c in candidates],
         })
 
@@ -834,7 +881,7 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
     players = conn.execute(
         """SELECT ps.player_id, ps.name, ps.full_name, ps.position, ps.price, ps.total_points,
                   ps.form, ps.points_per_game, ps.minutes, ps.selected_by_percent,
-                  ps.photo_code, t.short_name AS team
+                  ps.photo_code, ps.status, ps.chance_of_playing, ps.news, t.short_name AS team
            FROM player_snapshots ps
            LEFT JOIN teams t ON ps.team = t.team_id
            WHERE ps.snapshot_date = ? AND ps.minutes >= ?""",
@@ -857,6 +904,8 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
             "price": p["price"], "total_points": p["total_points"], "form": p["form"],
             "points_per_game": p["points_per_game"], "minutes": p["minutes"],
             "selected_by_percent": p["selected_by_percent"], "photo_code": p["photo_code"],
+            "status": p["status"], "status_label": STATUS_LABELS.get(p["status"], "Available"),
+            "chance_of_playing": p["chance_of_playing"], "news": p["news"],
             "gw_history": [dict(h) for h in history],
         }
 
