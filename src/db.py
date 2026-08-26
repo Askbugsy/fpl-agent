@@ -174,23 +174,84 @@ def save_snapshot(players: list[dict]) -> str:
     return today
 
 
+def _form_baseline_date(conn: sqlite3.Connection, latest_date: str) -> str | None:
+    """
+    Finds the most recent snapshot_date before latest_date that
+    reflects a genuinely earlier gameweek - detected by comparing the
+    total points summed across all players. Form (and total_points)
+    only move when a gameweek actually gets scored, so two snapshots
+    taken on different days but both sitting in the same idle gap
+    between gameweeks (e.g. the whole week between GW1 finishing and
+    GW2 kicking off) look identical here and this walks further back
+    instead of settling for a same-gameweek pair, which would
+    otherwise make every form trend read as a flat 0 until the next
+    gameweek finishes.
+
+    Returns None if every recorded snapshot reflects the same
+    gameweek state as latest_date (there simply isn't a second real
+    gameweek on record yet) - callers should treat that as "no trend
+    data yet" rather than manufacturing a zero delta.
+
+    Note this is deliberately form/points-specific - price moves day
+    to day from transfer-market activity independent of gameweeks, so
+    price trends should keep comparing against the immediately
+    preceding snapshot rather than this gameweek-aware baseline.
+    """
+    latest_total = conn.execute(
+        "SELECT SUM(total_points) FROM player_snapshots WHERE snapshot_date = ?",
+        (latest_date,),
+    ).fetchone()[0]
+
+    for row in conn.execute(
+        "SELECT DISTINCT snapshot_date FROM player_snapshots WHERE snapshot_date < ? ORDER BY snapshot_date DESC",
+        (latest_date,),
+    ):
+        d = row["snapshot_date"]
+        total = conn.execute(
+            "SELECT SUM(total_points) FROM player_snapshots WHERE snapshot_date = ?", (d,)
+        ).fetchone()[0]
+        if total != latest_total:
+            return d
+    return None
+
+
 def get_movers(limit: int = 10) -> list[dict]:
     """
-    Compares the two most recent snapshot dates and returns the
-    biggest form risers and fallers - the actual SQL query version
-    of what analyze.py's compute_trends() did by hand.
+    Compares the latest snapshot against the last snapshot that
+    reflects a genuinely earlier gameweek, and returns the biggest
+    form risers and fallers - the actual SQL query version of what
+    analyze.py's compute_trends() did by hand.
+
+    Falls back to ranking by current (GW1, or whichever gameweek is
+    most recently completed) form directly whenever no earlier
+    gameweek is on record yet to diff against - e.g. right now, in
+    the gap between GW1 finishing and GW2 kicking off, where a
+    week-over-week diff would just be a meaningless 0 for almost
+    everyone. That fallback rows still carry a form_change key (equal
+    to current_form) so callers don't need to special-case the shape.
     """
     conn = get_connection()
     conn.row_factory = sqlite3.Row
 
-    dates = conn.execute(
-        "SELECT DISTINCT snapshot_date FROM player_snapshots ORDER BY snapshot_date DESC LIMIT 2"
-    ).fetchall()
-    if len(dates) < 2:
+    latest_row = conn.execute("SELECT MAX(snapshot_date) AS d FROM player_snapshots").fetchone()
+    if latest_row["d"] is None:
         conn.close()
         return []
+    latest = latest_row["d"]
 
-    latest, previous = dates[0]["snapshot_date"], dates[1]["snapshot_date"]
+    previous = _form_baseline_date(conn, latest)
+    if previous is None:
+        rows = conn.execute(
+            """SELECT player_id, name, price, form AS current_form,
+                      form AS form_change, total_points AS points_gained
+               FROM player_snapshots
+               WHERE snapshot_date = ?
+               ORDER BY form DESC
+               LIMIT ?""",
+            (latest, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
 
     rows = conn.execute(
         """
@@ -209,6 +270,24 @@ def get_movers(limit: int = 10) -> list[dict]:
 
     conn.close()
     return [dict(r) for r in rows]
+
+
+def has_form_trend_baseline() -> bool:
+    """
+    True once a real earlier-gameweek snapshot exists to diff form
+    against, i.e. once get_movers() is returning a genuine trend
+    rather than its current-form fallback. Used purely to word the
+    Movers & Shakers card subtitle honestly.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    latest_row = conn.execute("SELECT MAX(snapshot_date) AS d FROM player_snapshots").fetchone()
+    if latest_row["d"] is None:
+        conn.close()
+        return False
+    baseline = _form_baseline_date(conn, latest_row["d"])
+    conn.close()
+    return baseline is not None
 
 
 def save_squad_picks(entry_id: int, gameweek: int, picks_data: dict, player_points: dict[int, int]) -> None:
@@ -904,13 +983,25 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
             (p["player_id"], CURRENT_SEASON),
         ).fetchall()
 
-        season_history = conn.execute(
+        season_history = []
+        for h in conn.execute(
             """SELECT season, total_points, minutes, goals_scored, assists
                FROM player_gw_history
                WHERE player_id = ? AND season != ? AND gameweek IS NULL
                ORDER BY season DESC""",
             (p["player_id"], CURRENT_SEASON),
-        ).fetchall()
+        ).fetchall():
+            h = dict(h)
+            # Past seasons only give us total minutes, not an actual
+            # appearance count, so games played (and points/game) is a
+            # rough guesstimate: minutes / 90, rounded. That undercounts
+            # players with a lot of late-sub cameos and overcounts anyone
+            # who played extra time, but it's the best estimate available
+            # without a real per-appearance data source.
+            games_est = round(h["minutes"] / 90) if h["minutes"] else 0
+            h["games_est"] = games_est
+            h["points_per_game_est"] = round(h["total_points"] / games_est, 2) if games_est > 0 else None
+            season_history.append(h)
 
         profiles[p["player_id"]] = {
             "name": p["name"], "full_name": p["full_name"] or p["name"],
@@ -921,7 +1012,7 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
             "status": p["status"], "status_label": STATUS_LABELS.get(p["status"], "Available"),
             "chance_of_playing": p["chance_of_playing"], "news": p["news"],
             "gw_history": [dict(h) for h in history],
-            "season_history": [dict(h) for h in season_history],
+            "season_history": season_history,
         }
 
     conn.close()
@@ -963,11 +1054,21 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
     elsewhere), plus your own manual pick per position, resolved by
     name from manual_picks (e.g. {"GK": "Raya", ...}).
 
-    Each pick also carries its form/price change vs the previous
+    Each pick also carries its form/price change vs a previous
     snapshot, same as the movers/shakers trend logic - so you're not
     just seeing a single week's number, you're watching how that
     specific player is trending over time, exactly the point of a
     watchlist rather than a one-off snapshot.
+
+    Price and form use different baselines, since they move on
+    different clocks: price shifts day to day with transfer-market
+    activity, so it's compared against the immediately preceding
+    snapshot. Form only moves when a gameweek is actually scored, so
+    it's compared against the last snapshot that reflects a genuinely
+    earlier gameweek (via _form_baseline_date) - otherwise, in the gap
+    between gameweeks, it would always read as a flat 0 change even
+    though nothing has really been compared yet. When no such earlier
+    gameweek exists, form_change is left as None rather than faked.
 
     A manual slot that's None, blank, or doesn't match any current
     player comes back as {"found": False} rather than being silently
@@ -982,19 +1083,26 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
     ).fetchall()
     latest_date = dates[0]["snapshot_date"]
     previous_date = dates[1]["snapshot_date"] if len(dates) > 1 else None
+    form_baseline_date = _form_baseline_date(conn, latest_date)
 
     def with_trend(row: dict) -> dict:
-        """Adds form_change/price_change vs the previous snapshot, if one exists."""
+        """Adds form_change (gameweek-aware baseline) and price_change (previous snapshot), if available."""
         row = dict(row)
         row["form_change"], row["price_change"] = None, None
         if previous_date:
             prev = conn.execute(
-                "SELECT form, price FROM player_snapshots WHERE player_id = ? AND snapshot_date = ?",
+                "SELECT price FROM player_snapshots WHERE player_id = ? AND snapshot_date = ?",
                 (row["player_id"], previous_date),
             ).fetchone()
             if prev:
-                row["form_change"] = round(row["form"] - prev["form"], 1)
                 row["price_change"] = round(row["price"] - prev["price"], 1)
+        if form_baseline_date:
+            prev_form = conn.execute(
+                "SELECT form FROM player_snapshots WHERE player_id = ? AND snapshot_date = ?",
+                (row["player_id"], form_baseline_date),
+            ).fetchone()
+            if prev_form:
+                row["form_change"] = round(row["form"] - prev_form["form"], 1)
         return row
 
     watchlist = {}

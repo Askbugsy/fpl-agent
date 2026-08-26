@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline
 from config import TEAM_ID, MY_WATCHLIST
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -86,12 +86,20 @@ def render_watchlist_pick(pick: dict) -> str:
     if pick.get("found") is False:
         return f'<span class="text-bad">"{pick["name"]}" not found &mdash; check config.py</span>'
 
-    trend = ""
+    # Form and price change are independent signals (form only moves once a new
+    # gameweek is scored; price moves day to day with transfer activity), so
+    # each renders only when its own baseline actually exists - not gated on
+    # the other one being available.
+    trend_parts = []
     if pick.get("form_change") is not None:
-        fc, pc = pick["form_change"], pick["price_change"]
+        fc = pick["form_change"]
         fc_cls = "text-good" if fc > 0 else "text-bad" if fc < 0 else "muted"
+        trend_parts.append(f'<span class="{fc_cls}">form {fc:+.1f}</span>')
+    if pick.get("price_change") is not None:
+        pc = pick["price_change"]
         pc_cls = "text-good" if pc > 0 else "text-bad" if pc < 0 else "muted"
-        trend = f' <span class="{fc_cls}">form {fc:+.1f}</span> <span class="{pc_cls}">price {pc:+.1f}m</span>'
+        trend_parts.append(f'<span class="{pc_cls}">price {pc:+.1f}m</span>')
+    trend = f' {" ".join(trend_parts)}' if trend_parts else ""
 
     return f'{player_link(pick["player_id"], pick["name"])} &mdash; £{pick["price"]}m{trend}'
 
@@ -170,6 +178,10 @@ def render_transfer_suggestion(t: dict) -> str:
 
 def build_html() -> str:
     movers = get_movers(limit=10)
+    movers_subtitle = (
+        "form change since last week" if has_form_trend_baseline()
+        else "no week-over-week trend yet &mdash; showing current form"
+    )
     value_picks = get_top_value(limit=10)
     full_table, latest_date = get_latest_full_table()
     squad = get_latest_squad(TEAM_ID)
@@ -422,7 +434,7 @@ def build_html() -> str:
     </div>
 
     <div class="card">
-      <h2>Movers &amp; Shakers <span class="subtitle">(form change since last week)</span></h2>
+      <h2>Movers &amp; Shakers <span class="subtitle">({movers_subtitle})</span></h2>
       <canvas id="moversChart"></canvas>
     </div>
 
@@ -711,9 +723,10 @@ function openProfile(playerId) {{
   let seasonRows = '';
   if (p.season_history && p.season_history.length) {{
     seasonRows = `<strong class="block-label" style="font-size:0.85rem;">Past Seasons</strong>
-      <table class="modal-gw-table"><thead><tr><th>Season</th><th>Pts</th><th>Min</th><th>G</th><th>A</th></tr></thead><tbody>` +
-      p.season_history.map(h => `<tr><td>${{h.season}}</td><td>${{h.total_points}}</td><td>${{h.minutes}}</td><td>${{h.goals_scored}}</td><td>${{h.assists}}</td></tr>`).join('') +
-      `</tbody></table>`;
+      <table class="modal-gw-table"><thead><tr><th>Season</th><th>Pts</th><th>Min</th><th>G</th><th>A</th><th>PPG*</th></tr></thead><tbody>` +
+      p.season_history.map(h => `<tr><td>${{h.season}}</td><td>${{h.total_points}}</td><td>${{h.minutes}}</td><td>${{h.goals_scored}}</td><td>${{h.assists}}</td><td>${{h.points_per_game_est !== null ? h.points_per_game_est : '&mdash;'}}</td></tr>`).join('') +
+      `</tbody></table>
+      <p class="muted" style="font-size:0.7rem;margin-top:4px;">*Estimated from minutes &divide; 90 &mdash; past seasons only record total minutes, not actual appearances, so treat this as a rough guide rather than an exact figure.</p>`;
   }}
 
   let statusHtml = '';
