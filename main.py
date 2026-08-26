@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline
 from config import TEAM_ID
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -121,6 +121,11 @@ def main():
             print(f"    {c['formation']:<8} {c['projected_total']} pts")
     else:
         print(f"  {formation.get('reason', 'Not enough data yet.')}")
+
+    deadline = get_next_deadline()
+    if deadline:
+        print(f"\n=== Next deadline ===")
+        print(f"  Gameweek {deadline['gameweek']}: {deadline['deadline_time']}")
 
 
 if __name__ == "__main__":

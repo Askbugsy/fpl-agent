@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline
 from config import TEAM_ID
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -177,6 +177,7 @@ def build_html() -> str:
     profiles = get_all_player_profiles()
     formation = get_optimal_formation(TEAM_ID)
     manager_stats = get_manager_stats(TEAM_ID)
+    next_deadline = get_next_deadline()
 
     formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
 
@@ -263,11 +264,21 @@ def build_html() -> str:
   .toggle-btn {{ background: #21262d; border: 1px solid #30363d; color: #8b949e; border-radius: 6px;
                   padding: 5px 10px; font-size: 0.75rem; cursor: pointer; }}
   .toggle-btn.active {{ background: #58a6ff; color: #0d1117; border-color: #58a6ff; font-weight: bold; }}
+  .deadline-card {{ text-align: center; background: linear-gradient(135deg, #21262d, #161b22); }}
+  .countdown {{ font-size: 1.6rem; font-weight: bold; color: #58a6ff; letter-spacing: 0.5px; }}
+  .countdown.urgent {{ color: #f85149; }}
 </style>
 </head>
 <body>
   <h1>⚽ FPL Agent Dashboard</h1>
   <div class="updated">Latest data: {latest_date}</div>
+
+  {"" if not next_deadline else f'''
+  <div class="card deadline-card">
+    <h2>Gameweek {next_deadline["gameweek"]} Deadline</h2>
+    <div id="countdown" class="countdown" data-deadline="{next_deadline["deadline_time"]}">calculating...</div>
+  </div>
+  '''}
 
   <div class="card">
     <h2>Manager Stats {"" if not manager_stats else f"&mdash; Gameweek {manager_stats['gameweek']}"}</h2>
@@ -633,6 +644,29 @@ if (squadToggle) {{
 }}
 
 if (squad.length) renderSquadPitch('points');
+
+const countdownEl = document.getElementById('countdown');
+if (countdownEl) {{
+  const deadline = new Date(countdownEl.dataset.deadline).getTime();
+  function updateCountdown() {{
+    const diff = deadline - Date.now();
+    if (diff <= 0) {{
+      countdownEl.textContent = 'Deadline has passed';
+      countdownEl.classList.add('urgent');
+      return;
+    }}
+    const days = Math.floor(diff / 86400000);
+    const hours = Math.floor((diff % 86400000) / 3600000);
+    const mins = Math.floor((diff % 3600000) / 60000);
+    const secs = Math.floor((diff % 60000) / 1000);
+    countdownEl.textContent = days > 0
+      ? `${{days}}d ${{hours}}h ${{mins}}m`
+      : `${{hours}}h ${{mins}}m ${{secs}}s`;
+    countdownEl.classList.toggle('urgent', diff < 3 * 3600000);  // under 3 hours
+  }}
+  updateCountdown();
+  setInterval(updateCountdown, 1000);
+}}
 </script>
 </body>
 </html>"""
