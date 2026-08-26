@@ -20,7 +20,7 @@ instead of manually loading and comparing JSON files.
 """
 
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "data" / "fpl.db"
@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS entry_summary (
 CREATE TABLE IF NOT EXISTS gameweek_summary (
     gameweek INTEGER PRIMARY KEY,
     average_score INTEGER,
-    highest_score INTEGER
+    highest_score INTEGER,
+    deadline_time TEXT
 );
 
 CREATE TABLE IF NOT EXISTS player_gw_history (
@@ -132,6 +133,7 @@ def get_connection() -> sqlite3.Connection:
         "ALTER TABLE player_snapshots ADD COLUMN status TEXT",
         "ALTER TABLE player_snapshots ADD COLUMN chance_of_playing INTEGER",
         "ALTER TABLE player_snapshots ADD COLUMN news TEXT",
+        "ALTER TABLE gameweek_summary ADD COLUMN deadline_time TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -283,18 +285,22 @@ def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict, live_s
 
 def save_gameweek_summary(events: list[dict]) -> None:
     """
-    Saves the league-wide average and highest score per gameweek -
-    already present in the bootstrap-static 'events' array we fetch
-    every week anyway, just wasn't being captured until now.
+    Saves the league-wide average/highest score and deadline time per
+    gameweek - all already present in the bootstrap-static 'events'
+    array we fetch every week anyway.
+
+    Deliberately NOT filtered to only gameweeks with a final score -
+    future gameweeks have no average_score yet, but we still need
+    their deadline_time for the countdown, so every event gets a row.
     """
     conn = get_connection()
     rows = [
-        (e["id"], e.get("average_entry_score"), e.get("highest_score"))
+        (e["id"], e.get("average_entry_score"), e.get("highest_score"), e.get("deadline_time"))
         for e in events
-        if e.get("average_entry_score") is not None
     ]
     conn.executemany(
-        "INSERT OR REPLACE INTO gameweek_summary (gameweek, average_score, highest_score) VALUES (?, ?, ?)",
+        """INSERT OR REPLACE INTO gameweek_summary
+           (gameweek, average_score, highest_score, deadline_time) VALUES (?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -911,6 +917,31 @@ def get_all_player_profiles(min_minutes: int = 0) -> dict:
 
     conn.close()
     return profiles
+
+
+def get_next_deadline() -> dict:
+    """
+    Finds the soonest upcoming gameweek deadline. Deadline times are
+    stored as FPL's own ISO 8601 UTC strings (e.g.
+    '2026-08-28T17:30:00Z'), which sort correctly as plain text
+    comparisons since they're fixed-width and zero-padded - no date
+    parsing needed for the SQL side.
+
+    Returns {} if there's no future deadline in the data (e.g. the
+    season's finished, or gameweek_summary hasn't been populated yet).
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row = conn.execute(
+        """SELECT gameweek, deadline_time FROM gameweek_summary
+           WHERE deadline_time > ? ORDER BY deadline_time ASC LIMIT 1""",
+        (now_iso,),
+    ).fetchone()
+    conn.close()
+
+    return dict(row) if row else {}
 
 
 def get_top_value(position: int | None = None, min_minutes: int = 90, limit: int = 10) -> list[dict]:
