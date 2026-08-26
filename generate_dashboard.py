@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline
-from config import TEAM_ID
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist
+from config import TEAM_ID, MY_WATCHLIST
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -79,6 +79,43 @@ def player_link(player_id: int, name: str) -> str:
     equivalent in JS - see the <script> block in build_html).
     """
     return f'<span class="player-link" onclick="openProfile({player_id})">{name}</span>'
+
+
+def trend_arrow(value: float) -> str:
+    if value > 0:
+        return '▲'
+    if value < 0:
+        return '▼'
+    return '–'
+
+
+def render_watchlist_pick(pick: dict) -> str:
+    if not pick:
+        return '<span style="color:#8b949e">not set</span>'
+    if pick.get("found") is False:
+        return f'<span style="color:#f85149">"{pick["name"]}" not found &mdash; check config.py</span>'
+
+    trend = ""
+    if pick.get("form_change") is not None:
+        fc, pc = pick["form_change"], pick["price_change"]
+        fc_color = "#3fb950" if fc > 0 else "#f85149" if fc < 0 else "#8b949e"
+        pc_color = "#3fb950" if pc > 0 else "#f85149" if pc < 0 else "#8b949e"
+        trend = (f' <span style="color:{fc_color}">{trend_arrow(fc)} form {fc:+.1f}</span>'
+                 f' <span style="color:{pc_color}">{trend_arrow(pc)} price {pc:+.1f}m</span>')
+
+    return f'{player_link(pick["player_id"], pick["name"])} &mdash; £{pick["price"]}m{trend}'
+
+
+def render_watchlist_card(watchlist: dict) -> str:
+    rows = ""
+    for pos, picks in watchlist.items():
+        rows += f'''
+        <div class="watchlist-row">
+          <div class="watchlist-pos">{pos}</div>
+          <div class="watchlist-col"><span class="subtitle">Data-driven</span><br>{render_watchlist_pick(picks["data_driven"])}</div>
+          <div class="watchlist-col"><span class="subtitle">Your pick</span><br>{render_watchlist_pick(picks["manual"])}</div>
+        </div>'''
+    return rows
 
 
 def render_formation_card(formation: dict) -> str:
@@ -178,6 +215,7 @@ def build_html() -> str:
     formation = get_optimal_formation(TEAM_ID)
     manager_stats = get_manager_stats(TEAM_ID)
     next_deadline = get_next_deadline()
+    watchlist = get_watchlist(MY_WATCHLIST)
 
     formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
 
@@ -264,6 +302,9 @@ def build_html() -> str:
   .toggle-btn {{ background: #21262d; border: 1px solid #30363d; color: #8b949e; border-radius: 6px;
                   padding: 5px 10px; font-size: 0.75rem; cursor: pointer; }}
   .toggle-btn.active {{ background: #58a6ff; color: #0d1117; border-color: #58a6ff; font-weight: bold; }}
+  .watchlist-row {{ display: grid; grid-template-columns: 50px 1fr 1fr; gap: 8px; padding: 8px 0; border-bottom: 1px solid #21262d; font-size: 0.85rem; align-items: start; }}
+  .watchlist-pos {{ font-weight: bold; color: #58a6ff; }}
+  .watchlist-col .subtitle {{ display: block; margin-bottom: 2px; }}
   .deadline-card {{ text-align: center; background: linear-gradient(135deg, #21262d, #161b22); }}
   .countdown {{ font-size: 1.6rem; font-weight: bold; color: #58a6ff; letter-spacing: 0.5px; }}
   .countdown.urgent {{ color: #f85149; }}
@@ -293,6 +334,11 @@ def build_html() -> str:
       <div><span>Bank</span><span>{f"£{manager_stats['bank']}m" if manager_stats.get('bank') is not None else '-'}</span></div>
     </div>
     '''}
+  </div>
+
+  <div class="card">
+    <h2>Watchlist <span class="subtitle">(1 data-driven + 1 yours, per position)</span></h2>
+    {render_watchlist_card(watchlist)}
   </div>
 
   <div class="card">

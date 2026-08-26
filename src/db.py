@@ -944,6 +944,81 @@ def get_next_deadline() -> dict:
     return dict(row) if row else {}
 
 
+POSITION_CODES = {"GK": 1, "DEF": 2, "MID": 3, "FWD": 4}
+
+
+def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
+    """
+    Builds the watchlist: one data-driven pick per position (highest
+    points-per-game-per-£1m, same "value score" formula used
+    elsewhere), plus your own manual pick per position, resolved by
+    name from manual_picks (e.g. {"GK": "Raya", ...}).
+
+    Each pick also carries its form/price change vs the previous
+    snapshot, same as the movers/shakers trend logic - so you're not
+    just seeing a single week's number, you're watching how that
+    specific player is trending over time, exactly the point of a
+    watchlist rather than a one-off snapshot.
+
+    A manual slot that's None, blank, or doesn't match any current
+    player comes back as {"found": False} rather than being silently
+    dropped, so a typo or a transferred-out player is visible on the
+    dashboard instead of just quietly missing.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    dates = conn.execute(
+        "SELECT DISTINCT snapshot_date FROM player_snapshots ORDER BY snapshot_date DESC LIMIT 2"
+    ).fetchall()
+    latest_date = dates[0]["snapshot_date"]
+    previous_date = dates[1]["snapshot_date"] if len(dates) > 1 else None
+
+    def with_trend(row: dict) -> dict:
+        """Adds form_change/price_change vs the previous snapshot, if one exists."""
+        row = dict(row)
+        row["form_change"], row["price_change"] = None, None
+        if previous_date:
+            prev = conn.execute(
+                "SELECT form, price FROM player_snapshots WHERE player_id = ? AND snapshot_date = ?",
+                (row["player_id"], previous_date),
+            ).fetchone()
+            if prev:
+                row["form_change"] = round(row["form"] - prev["form"], 1)
+                row["price_change"] = round(row["price"] - prev["price"], 1)
+        return row
+
+    watchlist = {}
+    for label, pos_code in POSITION_CODES.items():
+        data_driven = conn.execute(
+            """SELECT player_id, name, price, points_per_game, form, photo_code,
+                      ROUND(points_per_game / price, 3) AS value_score
+               FROM player_snapshots
+               WHERE snapshot_date = ? AND position = ? AND minutes >= ?
+               ORDER BY value_score DESC LIMIT 1""",
+            (latest_date, pos_code, min_minutes),
+        ).fetchone()
+
+        manual_name = (manual_picks or {}).get(label)
+        manual_pick = None
+        if manual_name:
+            manual_row = conn.execute(
+                """SELECT player_id, name, price, points_per_game, form, photo_code
+                   FROM player_snapshots
+                   WHERE snapshot_date = ? AND position = ? AND LOWER(name) = LOWER(?)""",
+                (latest_date, pos_code, manual_name),
+            ).fetchone()
+            manual_pick = with_trend(manual_row) if manual_row else {"found": False, "name": manual_name}
+
+        watchlist[label] = {
+            "data_driven": with_trend(data_driven) if data_driven else None,
+            "manual": manual_pick,
+        }
+
+    conn.close()
+    return watchlist
+
+
 def get_top_value(position: int | None = None, min_minutes: int = 90, limit: int = 10) -> list[dict]:
     """Latest snapshot only, ranked by points-per-game per £1m spent."""
     conn = get_connection()
