@@ -660,7 +660,7 @@ if (countdownEl) {{
     const mins = Math.floor((diff % 3600000) / 60000);
     const secs = Math.floor((diff % 60000) / 1000);
     countdownEl.textContent = days > 0
-      ? `${{days}}d ${{hours}}h ${{mins}}m`
+      ? `${{days}}d ${{hours}}h ${{mins}}m ${{secs}}s`
       : `${{hours}}h ${{mins}}m ${{secs}}s`;
     countdownEl.classList.toggle('urgent', diff < 3 * 3600000);  // under 3 hours
   }}
