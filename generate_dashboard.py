@@ -420,9 +420,7 @@ def build_html() -> str:
       <div class="squad-row">🃏 <strong>Free Hit:</strong> {chip_advice['free_hit']}</div>
       <div class="squad-row bench">Wildcard timing isn't scored here &mdash; that call depends on broader squad health and fixture swings, better discussed directly.</div>
     </div>
-  </div>
 
-  <div class="tab-panel" id="tab-explore">
     <div class="card">
       <h2>Movers &amp; Shakers <span class="subtitle">(form change since last week)</span></h2>
       <canvas id="moversChart"></canvas>
@@ -432,7 +430,9 @@ def build_html() -> str:
       <h2>Top Value Picks <span class="subtitle">(points/game per £1m)</span></h2>
       <canvas id="valueChart"></canvas>
     </div>
+  </div>
 
+  <div class="tab-panel" id="tab-explore">
     <div class="card">
       <h2>Full Table</h2>
       <div class="toggle-row" id="positionFilter">
