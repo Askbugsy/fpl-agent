@@ -353,6 +353,21 @@ def build_html() -> str:
 
   <div class="tab-panel active" id="tab-squad">
     <div class="card">
+      <h2>Manager Stats &mdash; Gameweek {manager_stats.get('gameweek', '?')}</h2>
+      {"<p>No manager data yet.</p>" if not manager_stats else f'''
+      <div class="modal-stats">
+        <div><span>Your points</span><span><strong>{manager_stats.get('gw_points', '-')}</strong></span></div>
+        <div><span>League average</span><span>{manager_stats.get('average_score', '-')}</span></div>
+        <div><span>League highest</span><span>{manager_stats.get('highest_score', '-')}</span></div>
+        <div><span>GW rank</span><span>{f"{manager_stats['gw_rank']:,}" if manager_stats.get('gw_rank') else '-'}</span></div>
+        <div><span>Overall rank</span><span>{f"{manager_stats['overall_rank']:,}" if manager_stats.get('overall_rank') else '-'}</span></div>
+        <div><span>Squad value</span><span>£{manager_stats.get('team_value', '-')}m</span></div>
+        <div><span>Bank</span><span>£{manager_stats.get('bank', '-')}m</span></div>
+      </div>
+      '''}
+    </div>
+
+    <div class="card">
       <h2>My Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
       {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else '''
       <div class="toggle-row" id="squadToggle">
@@ -371,21 +386,6 @@ def build_html() -> str:
   </div>
 
   <div class="tab-panel" id="tab-today">
-    <div class="card">
-      <h2>Manager Stats &mdash; Gameweek {manager_stats.get('gameweek', '?')}</h2>
-      {"<p>No manager data yet.</p>" if not manager_stats else f'''
-      <div class="modal-stats">
-        <div><span>Your points</span><span><strong>{manager_stats.get('gw_points', '-')}</strong></span></div>
-        <div><span>League average</span><span>{manager_stats.get('average_score', '-')}</span></div>
-        <div><span>League highest</span><span>{manager_stats.get('highest_score', '-')}</span></div>
-        <div><span>GW rank</span><span>{f"{manager_stats['gw_rank']:,}" if manager_stats.get('gw_rank') else '-'}</span></div>
-        <div><span>Overall rank</span><span>{f"{manager_stats['overall_rank']:,}" if manager_stats.get('overall_rank') else '-'}</span></div>
-        <div><span>Squad value</span><span>£{manager_stats.get('team_value', '-')}m</span></div>
-        <div><span>Bank</span><span>£{manager_stats.get('bank', '-')}m</span></div>
-      </div>
-      '''}
-    </div>
-
     <div class="card">
       <h2>Best Formation for Upcoming Fixtures</h2>
       {render_formation_card(formation)}
