@@ -130,6 +130,8 @@ def render_transfer_suggestion(t: dict) -> str:
         reasons.append(f"form -{t['form_drop']}")
     if t["price_drop"]:
         reasons.append(f"price -£{t['price_drop']}m")
+    if t.get("injury_reason"):
+        reasons.append(t["injury_reason"])
     reason_text = ", ".join(reasons)
 
     candidates_html = "".join(
@@ -221,6 +223,9 @@ def build_html() -> str:
   .player-pic {{ width: 32px; height: 40px; object-fit: cover; border-radius: 4px; background: #21262d; flex-shrink: 0; }}
   .squad-row.bench {{ color: #8b949e; }}
   .pos-tag {{ color: #58a6ff; font-size: 0.75rem; }}
+  .status-badge {{ font-size: 0.7rem; }}
+  .status-red {{ color: #f85149; }}
+  .status-amber {{ color: #d29922; }}
   .squad-list strong {{ display: block; margin: 10px 0 4px; }}
   .subtitle {{ color: #8b949e; font-size: 0.75rem; font-weight: normal; }}
   .transfer-card {{ border: 1px solid #30363d; border-radius: 6px; padding: 10px; margin-bottom: 10px; font-size: 0.9rem; }}
@@ -481,11 +486,21 @@ function openProfile(playerId) {{
     gwRows = `<p style="color:#8b949e;font-size:0.85rem;">Gameweek-by-gameweek history not available yet - run the historical backfill to populate this.</p>`;
   }}
 
+  let statusHtml = '';
+  if (p.status && p.status !== 'a') {{
+    const badgeColor = (p.status === 'd') ? '#d29922' : '#f85149';
+    statusHtml = `<div style="background:${{badgeColor}}22;border:1px solid ${{badgeColor}};border-radius:6px;padding:8px;margin:10px 0;font-size:0.85rem;">
+      <strong style="color:${{badgeColor}}">${{p.status_label}}</strong>${{p.chance_of_playing !== null && p.chance_of_playing !== undefined ? ` &mdash; ${{p.chance_of_playing}}% chance of playing` : ''}}
+      ${{p.news ? `<br>${{p.news}}` : ''}}
+    </div>`;
+  }}
+
   document.getElementById('modalBody').innerHTML = `
     <div class="modal-header">
       <img src="${{photoUrl}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
       <div><strong>${{p.full_name || p.name}}</strong><br><span style="color:#8b949e">${{p.team || ''}} &middot; ${{POS_NAMES[p.position] || '?'}}</span></div>
     </div>
+    ${{statusHtml}}
     <div class="modal-stats">
       <div><span>Price</span><span>£${{p.price}}m</span></div>
       <div><span>Total points</span><span>${{p.total_points}}</span></div>
@@ -517,6 +532,7 @@ function buildPitchHTML(xi, captainId, viceCaptainId) {{
       return `
       <div class="pitch-player${{isCaptain ? ' is-captain' : isVice ? ' is-vice-captain' : ''}}">
         <img class="pitch-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
+        ${{statusDotHTML(p.status)}}
         <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span><br>
         <span class="pitch-score">${{p.score}}${{isCaptain ? ' (C)' : isVice ? ' (VC)' : ''}}</span>
       </div>`;
@@ -529,6 +545,7 @@ function buildBenchHTML(bench) {{
   return bench.map(p => `
     <div class="squad-row bench">
       <img class="player-pic" src="${{pitchPhotoUrl(p.photo_code)}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
+      ${{statusDotHTML(p.status)}}
       <span class="player-link" onclick="openProfile(${{p.player_id}})">${{p.name}}</span>
       <span class="pos-tag">${{POS_NAMES[p.position] || '?'}}</span> &mdash; score ${{p.score}}
     </div>`).join('');
@@ -573,6 +590,16 @@ const SQUAD_METRICS = {{
 
 const SQUAD_POS_ORDER = ['GK', 'DEF', 'MID', 'FWD'];
 
+function statusDotHTML(status, news) {{
+  if (status === 'i' || status === 's' || status === 'u' || status === 'n') {{
+    return `<span class="status-badge status-red" title="${{news || ''}}">&#9679;</span>`;
+  }}
+  if (status === 'd') {{
+    return `<span class="status-badge status-amber" title="${{news || ''}}">&#9679;</span>`;
+  }}
+  return '';
+}}
+
 function squadPitchPlayerHTML(r, metric) {{
   const m = SQUAD_METRICS[metric];
   const tag = r.is_captain ? ' (C)' : r.is_vice_captain ? ' (V)' : '';
@@ -580,6 +607,7 @@ function squadPitchPlayerHTML(r, metric) {{
   return `
     <div class="pitch-player${{r.is_captain ? ' is-captain' : ''}}">
       <img class="pitch-pic" src="${{photoUrl}}" onerror="${{photoOnErrorAttr(r.photo_code)}}" alt="">
+      ${{statusDotHTML(r.status, r.news)}}
       <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>${{tag}}<br>
       <span class="pitch-score">${{m.label}} ${{m.value(r)}}</span>
     </div>`;
