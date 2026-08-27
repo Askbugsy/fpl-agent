@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios, STATUS_LABELS
 from config import TEAM_ID, MY_WATCHLIST, CLAUDE_CHAT_URL
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -202,9 +202,51 @@ def render_transfer_suggestion(t: dict) -> str:
     </div>'''
 
 
+def _squad_line(p: dict) -> str:
+    tag = " (C)" if p.get("is_captain") else " (V)" if p.get("is_vice_captain") else ""
+    fixture = f"vs {p['opponent']} (FDR {p['difficulty']})" if p.get("opponent") else "no upcoming fixture found"
+    status_note = ""
+    if p.get("status") and p["status"] != "a":
+        label = STATUS_LABELS.get(p["status"], "Unavailable")
+        chance = p.get("chance_of_playing")
+        status_note = f" [{label}{f', {chance}% chance' if chance is not None else ''}]"
+    return f"  - {p['name']}{tag} ({p['position']}) - {fixture}, form {p['form']}, £{p['price']}m{status_note}"
+
+
+def _departed_squad_contributions(squad_history: dict[int, list[dict]]) -> list[dict]:
+    """
+    Python port of the dashboard's own previousSquadHTML() JS logic:
+    for every player who's ever been in a recorded squad but isn't in
+    the LATEST one, sums their points across only the gameweeks they
+    were actually owned. Kept in lockstep with that function so the
+    briefing text can never tell a different "who contributed what"
+    story than the Historical Contributors card does.
+    """
+    if not squad_history:
+        return []
+    gws = sorted(squad_history.keys())
+    latest_gw = gws[-1]
+    current_ids = {r["player_id"] for r in squad_history[latest_gw]}
+
+    departed: dict[int, dict] = {}
+    for gw in gws:
+        for r in squad_history[gw]:
+            if r["player_id"] in current_ids:
+                continue
+            pts = (r["gw_points"] or 0) * r["multiplier"] if r["multiplier"] > 0 else (r["gw_points"] or 0)
+            entry = departed.setdefault(
+                r["player_id"], {"name": r["name"], "position": r["position"], "total": 0, "last_gw": gw}
+            )
+            entry["total"] += pts
+            entry["last_gw"] = gw
+
+    return sorted(departed.values(), key=lambda e: (-e["last_gw"], -e["total"]))
+
+
 def build_weekly_briefing(
-    manager_stats: dict, captain_picks: list[dict], chip_advice: dict,
-    transfer_suggestions: list[dict], formation: dict, what_if: dict,
+    manager_stats: dict, starters: list[dict], bench: list[dict],
+    captain_picks: list[dict], chip_advice: dict, transfer_suggestions: list[dict],
+    watchlist: dict, formation: dict, what_if: dict, departed_contributions: list[dict],
     next_deadline: dict,
 ) -> str:
     """
@@ -214,6 +256,11 @@ def build_weekly_briefing(
     data the dashboard has already computed (no extra API calls, no
     cost), so it can never say something different from what the page
     itself shows.
+
+    Every section that could legitimately be empty says so explicitly
+    (e.g. "no transfer suggestions flagged") rather than silently
+    vanishing, so the briefing never reads as if something's missing
+    by accident.
     """
     lines = [f"Here's my FPL dashboard for Gameweek {manager_stats.get('gameweek', '?')} - talk me through it?", ""]
 
@@ -230,6 +277,16 @@ def build_weekly_briefing(
             lines.append(f"Overall rank: {manager_stats['overall_rank']:,}.")
         if manager_stats.get("bank") is not None and manager_stats.get("team_value") is not None:
             lines.append(f"Squad value £{manager_stats['team_value']}m, £{manager_stats['bank']}m in the bank.")
+        lines.append("")
+
+    if starters or bench:
+        lines.append("Current squad - starting XI:")
+        for p in starters:
+            lines.append(_squad_line(p))
+        if bench:
+            lines.append("Bench:")
+            for p in bench:
+                lines.append(_squad_line(p))
         lines.append("")
 
     if captain_picks:
@@ -255,22 +312,54 @@ def build_weekly_briefing(
             reason_text = ", ".join(reasons)
             candidate = t["candidates"][0]["name"] if t["candidates"] else "no clear replacement found"
             lines.append(f"  - {t['name']} ({t['urgency']}): {reason_text}. Top replacement idea: {candidate}.")
+    else:
+        lines.append("No transfer suggestions flagged right now - squad looks stable on form/price/injury signals.")
+    lines.append("")
+
+    if watchlist:
+        lines.append("Watchlist (data-driven pick + your manual pick, per position):")
+        for pos, picks in watchlist.items():
+            dd = picks.get("data_driven")
+            dd_text = f"{dd['name']} £{dd['price']}m" if dd else "n/a"
+            manual = picks.get("manual")
+            if manual and manual.get("found") is False:
+                manual_text = f"'{manual['name']}' not found"
+            elif manual:
+                manual_text = f"{manual['name']} £{manual['price']}m"
+            else:
+                manual_text = "not set"
+            lines.append(f"  - {pos}: data-driven {dd_text} | yours: {manual_text}")
         lines.append("")
 
     if formation.get("formation"):
         lines.append(f"Recommended formation for upcoming fixtures: {formation['formation']} (projected {formation['projected_total']} pts).")
         lines.append("")
 
+    if departed_contributions:
+        lines.append("Players transferred out this season (points scored while you owned them):")
+        for d in departed_contributions[:5]:
+            lines.append(f"  - {d['name']} ({d['position']}): {d['total']} pts (through GW{d['last_gw']})")
+        lines.append("")
+
     scenarios = what_if.get("scenarios", [])
     reality = what_if.get("reality", [])
-    if len(scenarios) >= 2 and reality:
+    if scenarios and reality:
         reality_total = reality[-1]["cumulative"]
-        lines.append("What Could Have Been so far this season:")
-        lines.append(f"  - Actual: {reality_total} pts")
-        for s in scenarios:
-            diff = s["total_to_date"] - reality_total
-            sign = "+" if diff > 0 else ""
-            lines.append(f"  - GW{s['start_gw']} squad: {s['total_to_date']} pts ({sign}{diff} vs actual)")
+        if len(scenarios) == 1:
+            lines.append(
+                f"What Could Have Been: only one squad recorded so far this season (no transfers made yet) - "
+                f"GW{scenarios[0]['start_gw']} squad tracks exactly with Actual ({reality_total} pts) by definition."
+            )
+        else:
+            lines.append("What Could Have Been so far this season:")
+            lines.append(f"  - Actual: {reality_total} pts")
+            for s in scenarios:
+                diff = s["total_to_date"] - reality_total
+                sign = "+" if diff > 0 else ""
+                lines.append(f"  - GW{s['start_gw']} squad: {s['total_to_date']} pts ({sign}{diff} vs actual)")
+        lines.append("")
+    else:
+        lines.append("What Could Have Been: not enough gameweeks played yet to compare.")
         lines.append("")
 
     if next_deadline:
@@ -342,9 +431,11 @@ def build_html() -> str:
 
     formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
 
+    departed_contributions = _departed_squad_contributions(squad_history)
     weekly_briefing = build_weekly_briefing(
-        manager_stats, captain_picks, chip_advice, transfer_suggestions,
-        formation, what_if, next_deadline,
+        manager_stats, starters, bench, captain_picks, chip_advice,
+        transfer_suggestions, watchlist, formation, what_if,
+        departed_contributions, next_deadline,
     )
 
     movers_json = json.dumps(movers)
