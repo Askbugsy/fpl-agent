@@ -345,6 +345,27 @@ def clear_pending_gw_points(entry_id: int, gameweek: int) -> None:
     conn.close()
 
 
+def clear_pending_manager_stats(entry_id: int, gameweek: int) -> None:
+    """
+    Sibling safety net to clear_pending_gw_points(), for entry_summary:
+    NULLs out bank and team_value for a gameweek that's still pending,
+    in case an earlier run saved these from a fetch that shouldn't
+    have succeeded yet - otherwise a stale £0.0m squad value can sit
+    on the Manager Stats card indefinitely. gw_rank/overall_rank are
+    left alone: those reflect FPL's live, continuously-updating
+    standings rather than anything tied to this specific gameweek's
+    result, so they're not "wrong" the way a frozen bank/value figure
+    would be.
+    """
+    conn = get_connection()
+    conn.execute(
+        "UPDATE entry_summary SET bank = NULL, team_value = NULL WHERE entry_id = ? AND gameweek = ?",
+        (entry_id, gameweek),
+    )
+    conn.commit()
+    conn.close()
+
+
 def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict, live_summary: dict | None = None) -> None:
     """
     Saves bank/team value/points/rank for this gameweek. bank/value/
