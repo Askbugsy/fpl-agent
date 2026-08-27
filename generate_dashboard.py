@@ -14,6 +14,7 @@ Run this after main.py in the workflow; it reads straight from
 data/fpl.db.
 """
 
+import base64
 import json
 import sys
 from pathlib import Path
@@ -49,6 +50,31 @@ PLAYER_PHOTO_FALLBACK = (
     "data:image/svg+xml;base64,"
     "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iI0YzRTNENiIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iMzgiIHI9IjE4IiBmaWxsPSIjOEE4MDc0Ii8+PHBhdGggZD0iTTIwIDkwYzAtMjIgMTMtMzYgMzAtMzZzMzAgMTQgMzAgMzYiIGZpbGw9IiM4QTgwNzQiLz48L3N2Zz4="
 )
+
+# Faint white pitch markings (touchlines, halfway line + center circle, both
+# penalty boxes) drawn as an inline SVG and layered as a second background
+# image behind the player cards, so every pitch view reads as an actual
+# football pitch rather than a plain green rectangle. Kept low-opacity since
+# the player cards themselves are near-opaque and sit on top.
+_PITCH_MARKINGS_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 150">
+<g fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="1">
+<rect x="3" y="3" width="94" height="144"/>
+<line x1="3" y1="75" x2="97" y2="75"/>
+<circle cx="50" cy="75" r="13"/>
+<rect x="24" y="3" width="52" height="20"/>
+<rect x="38" y="3" width="24" height="8"/>
+<path d="M 38 23 A 13 13 0 0 1 62 23"/>
+<rect x="24" y="127" width="52" height="20"/>
+<rect x="38" y="139" width="24" height="8"/>
+<path d="M 38 127 A 13 13 0 0 0 62 127"/>
+</g>
+<g fill="#ffffff" fill-opacity="0.35">
+<circle cx="50" cy="75" r="0.8"/>
+<circle cx="50" cy="16" r="0.8"/>
+<circle cx="50" cy="134" r="0.8"/>
+</g>
+</svg>'''
+PITCH_MARKINGS_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(_PITCH_MARKINGS_SVG.encode()).decode()
 
 
 def get_latest_full_table() -> list[dict]:
@@ -317,7 +343,12 @@ def build_html() -> str:
   .modal-gw-table {{ width: 100%; font-size: 0.8rem; margin-top: 10px; }}
   .modal-gw-table th, .modal-gw-table td {{ padding: 4px 6px; text-align: center; border-bottom: 1px solid var(--border); }}
 
-  .pitch {{ background: linear-gradient(180deg, #6B8F5C, #5B7B4F); border-radius: 12px; padding: 14px 6px; margin: 12px 0; }}
+  .pitch {{
+    background-image: url("{PITCH_MARKINGS_DATA_URI}"), linear-gradient(180deg, #6B8F5C, #5B7B4F);
+    background-size: 100% 100%, 100% 100%;
+    background-repeat: no-repeat, no-repeat;
+    border-radius: 12px; padding: 14px 6px; margin: 12px 0;
+  }}
   .pitch-row {{ display: flex; justify-content: space-around; flex-wrap: wrap; margin: 8px 0; }}
   .pitch-player {{ background: rgba(255,255,255,0.92); border-radius: 8px; padding: 5px 9px; text-align: center; font-size: 0.75rem; min-width: 62px; }}
   .pitch-player.is-captain {{ border: 2px solid var(--clay); }}
@@ -496,6 +527,8 @@ def build_html() -> str:
       <div class="pitch" id="historyPitch"></div>
       <strong class="block-label">Bench</strong>
       <div id="historyBench"></div>
+      <strong class="block-label">Transfers <span class="subtitle">(vs the previous recorded gameweek)</span></strong>
+      <div id="historyTransfers"></div>
       '''}
     </div>
   </div>
@@ -663,7 +696,35 @@ function historyBenchRowHTML(r) {{
     </div>`;
 }}
 
+const historyGws = Object.keys(squadHistory).map(Number).sort((a, b) => a - b);
+
+function transferListHTML(players) {{
+  if (!players.length) return '&mdash;';
+  return players.map(r => `<span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>`).join(', ');
+}}
+
+function historyTransfersHTML(gw) {{
+  const idx = historyGws.indexOf(gw);
+  if (idx <= 0) {{
+    return '<p class="muted" style="font-size:0.85rem;">Starting squad &mdash; no earlier recorded gameweek to compare against.</p>';
+  }}
+  const prevGw = historyGws[idx - 1];
+  const curRows = squadHistory[gw], prevRows = squadHistory[prevGw];
+  const curIds = new Set(curRows.map(r => r.player_id));
+  const prevIds = new Set(prevRows.map(r => r.player_id));
+  const inPlayers = curRows.filter(r => !prevIds.has(r.player_id));
+  const outPlayers = prevRows.filter(r => !curIds.has(r.player_id));
+
+  if (!inPlayers.length && !outPlayers.length) {{
+    return `<p class="muted" style="font-size:0.85rem;">No transfers made since Gameweek ${{prevGw}}.</p>`;
+  }}
+  return `
+    <div class="squad-row"><span class="text-good">IN:</span> ${{transferListHTML(inPlayers)}}</div>
+    <div class="squad-row"><span class="text-bad">OUT:</span> ${{transferListHTML(outPlayers)}}</div>`;
+}}
+
 function renderHistoryGW(gw) {{
+  gw = Number(gw);
   const rows = squadHistory[gw];
   if (!rows) return;
 
@@ -676,6 +737,7 @@ function renderHistoryGW(gw) {{
     `<div class="pitch-row">${{byPos[pos].map(r => squadPitchPlayerHTML(r, 'points')).join('')}}</div>`
   ).join('');
   document.getElementById('historyBench').innerHTML = bench.map(historyBenchRowHTML).join('');
+  document.getElementById('historyTransfers').innerHTML = historyTransfersHTML(gw);
 
   const total = starters.reduce((sum, r) => sum + SQUAD_METRICS.points.value(r), 0);
   document.getElementById('historyGwLabel').textContent = `Gameweek ${{gw}}`;
