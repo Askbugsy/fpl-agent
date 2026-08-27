@@ -32,27 +32,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run the data pull
-        env:
-          # Optional: only needed to see a pending gameweek's squad before
-          # its deadline passes (the public API can't see that for anyone,
-          # even your own team). FPL has no password login any more - this
-          # has to be a refresh token extracted from an already-logged-in
-          # browser session. Add it under Settings -> Secrets and variables
-          # -> Actions if you want that; the pipeline falls back to the
-          # public endpoint gracefully if it's not set.
-          FPL_REFRESH_TOKEN: ${{ secrets.FPL_REFRESH_TOKEN }}
-          # Optional, only needed alongside FPL_REFRESH_TOKEN above: FPL's
-          # OIDC provider rotates the refresh token on every use, so main.py
-          # tries to save the newly-issued one back over FPL_REFRESH_TOKEN
-          # via `gh secret set`. That call needs write access to this repo's
-          # secrets, which the default GITHUB_TOKEN can't grant no matter
-          # what's in `permissions:` above - it has to be a fine-grained
-          # personal access token, scoped to just this repo with only its
-          # Secrets permission set to read/write, stored as its own secret.
-          # Without it, the pending-squad preview still works the same as
-          # before - you'd just be back to re-extracting a token by hand
-          # whenever you want to use it.
-          GH_SECRETS_PAT: ${{ secrets.GH_SECRETS_PAT }}
         run: python3 main.py
 
       - name: Build the dashboard

@@ -14,13 +14,12 @@ To also (re)build the visual dashboard from this data, run:
     python3 generate_dashboard.py
 """
 
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures, get_my_team, refresh_access_token, rotate_refresh_token_secret
+from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures
 from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist
 from config import TEAM_ID, MY_WATCHLIST
 
@@ -62,67 +61,30 @@ def main():
 
     if current_gw:
         print(f"Fetching your squad (Team ID {TEAM_ID}) for Gameweek {current_gw}...")
-        picks_data = None
-        # True only when the public endpoint failed and we had to fall back
-        # to the authenticated one - which only ever happens when this
-        # gameweek's deadline hasn't passed yet, i.e. it has no real points
-        # yet at all. bootstrap-static's event_points at that moment still
-        # reflects whichever gameweek was last actually played, so treating
-        # it as "this gameweek's points" would mislabel last week's scores -
-        # including for players since transferred out - as this week's.
-        pending_gameweek = False
         try:
             picks_data = get_entry_picks(TEAM_ID, current_gw)
+
+            player_points = {p["id"]: p["event_points"] for p in players}
+            save_squad_picks(TEAM_ID, current_gw, picks_data, player_points)
+
+            live_summary = None
+            try:
+                live_summary = get_entry_summary(TEAM_ID)
+            except Exception as e:
+                # Rank still saves from entry_history below, just frozen
+                # at whenever that gameweek was scored rather than live.
+                print(f"Could not fetch live rank: {e}\n")
+
+            save_entry_summary(TEAM_ID, current_gw, picks_data.get("entry_history", {}), live_summary)
+            print("Squad saved.\n")
         except Exception as e:
             # Most commonly a 404: the public picks endpoint doesn't
             # expose a gameweek until its deadline has passed, even for
             # your own team - that's by design, so rivals can't scout
-            # your squad early. Try an authenticated fallback below
-            # before giving up.
-            print(f"Public picks endpoint unavailable for GW{current_gw}: {e}")
-
-            refresh_token = os.environ.get("FPL_REFRESH_TOKEN")
-            if refresh_token:
-                try:
-                    print("Trying an authenticated fetch for your pending picks instead...")
-                    access_token, rotated_refresh_token = refresh_access_token(refresh_token)
-                    if rotated_refresh_token:
-                        rotate_refresh_token_secret(rotated_refresh_token)
-                    picks_data = get_my_team(access_token, TEAM_ID)
-                    pending_gameweek = True
-                    print("Fetched your pending picks via authenticated session.")
-                except Exception as auth_e:
-                    print(f"Authenticated fetch also failed: {auth_e}")
-            else:
-                print("FPL_REFRESH_TOKEN not set - add this as a GitHub Actions secret "
-                      "to see a pending gameweek's squad before its deadline.")
-
-        if picks_data:
-            try:
-                player_points = {} if pending_gameweek else {p["id"]: p["event_points"] for p in players}
-                save_squad_picks(TEAM_ID, current_gw, picks_data, player_points)
-
-                live_summary = None
-                try:
-                    live_summary = get_entry_summary(TEAM_ID)
-                except Exception as e:
-                    # Rank still saves from entry_history below, just frozen
-                    # at whenever that gameweek was scored rather than live.
-                    print(f"Could not fetch live rank: {e}\n")
-
-                # The authenticated my-team endpoint has no entry_history
-                # block at all (points/rank for a gameweek that hasn't been
-                # scored yet don't exist) - but it does carry bank/squad
-                # value under 'transfers', with the same field names, so
-                # Manager Stats doesn't show a bogus £0.0m for a pending
-                # gameweek while its points/rank are correctly left blank.
-                entry_history = picks_data.get("entry_history") or picks_data.get("transfers", {})
-                save_entry_summary(TEAM_ID, current_gw, entry_history, live_summary)
-                print("Squad saved.\n")
-            except Exception as e:
-                print(f"Could not save squad picks: {e}\n")
-        else:
-            print()
+            # your squad early. There's no way around this without your
+            # own login, which FPL's identity provider doesn't allow a
+            # script to do on your behalf.
+            print(f"Could not fetch squad for GW{current_gw}: {e}\n")
 
     movers = get_movers(limit=5)
     if movers:

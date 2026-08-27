@@ -11,9 +11,6 @@ Docs aren't official, but the community has reverse-engineered this
 well: https://github.com/vaastav/Fantasy-Premier-League/wiki
 """
 
-import os
-import subprocess
-
 import requests
 
 BASE_URL = "https://fantasy.premierleague.com/api"
@@ -93,168 +90,13 @@ def get_entry_summary(entry_id: int) -> dict:
     return resp.json()
 
 
-# --- Authenticated access (optional) -----------------------------------
-#
-# Everything above is public - no login needed. But get_entry_picks()
-# for a gameweek whose deadline hasn't passed yet returns a 404: FPL
-# doesn't expose a manager's pending picks publicly (so rivals can't
-# scout your team before deadline). The only way to see YOUR OWN
-# pending squad - the one you can still edit - is the authenticated
-# "my-team" endpoint below.
-#
-# FPL retired plain email/password login at some point (the old
-# users.premierleague.com login form no longer resolves at all) in
-# favour of a PingOne-based OIDC flow - the same modernization that's
-# why "Sign in with Google" works on the FPL site now. There's no
-# login call this code can make on your behalf any more: a refresh
-# token has to come from an already-logged-in browser session
-# (extracted from localStorage - see the app's OIDC client below),
-# which this code then exchanges for short-lived access tokens.
-#
-# main.py only uses this as a fallback, and only if FPL_REFRESH_TOKEN
-# is set (meant to come from a GitHub Actions secret, never committed
-# to the repo). The token is held in memory only for the duration of
-# the exchange call - never logged, never written to disk or the
-# database.
-#
-# Confirmed live: PingOne rotates the refresh token on every exchange
-# and invalidates the old one - a token that worked fine on one run
-# got a 400 Bad Request on the very next. refresh_access_token() below
-# returns any newly-issued refresh token alongside the access token,
-# and rotate_refresh_token_secret() persists it back to the GitHub
-# secret via the gh CLI, so a stored token keeps working indefinitely
-# instead of needing manual re-extraction after every single use.
-
-FPL_OIDC_AUTHORITY = "https://account.premierleague.com/as"
-FPL_OIDC_CLIENT_ID = "bfcbaf69-aade-4c1b-8f00-c1cb8a193030"
-
-
-def refresh_access_token(refresh_token: str) -> tuple[str, str | None]:
-    """
-    Exchanges a refresh token for a fresh access token via FPL's OIDC
-    provider, using standard OAuth2 discovery (fetching the provider's
-    own .well-known/openid-configuration for its token endpoint,
-    rather than a hardcoded URL that could go stale) plus the standard
-    refresh_token grant.
-
-    Returns (access_token, rotated_refresh_token) - the second element
-    is None unless the provider issued a genuinely new refresh token in
-    this same response (some do this on every exchange, invalidating
-    the one that was just used). Callers should persist a non-None
-    rotated_refresh_token, or the next run will fail with the same
-    now-dead token.
-    """
-    discovery = requests.get(f"{FPL_OIDC_AUTHORITY}/.well-known/openid-configuration", timeout=10)
-    discovery.raise_for_status()
-    discovery_data = discovery.json()
-    token_endpoint = discovery_data["token_endpoint"]
-
-    # One-time diagnostic: four fresh, carefully-extracted tokens in a row
-    # have all been rejected with the same "refresh token does not exist"
-    # error, which rules out staleness/rotation-race as the cause. Before
-    # asking for yet another manual extraction, print the provider's own
-    # advertised capabilities - none of this is secret, it's the public
-    # discovery document - to check whether our assumptions about the
-    # grant (form-encoded body, refresh_token grant type, no extra params)
-    # actually match what this provider expects.
-    print(
-        "OIDC discovery: grant_types_supported="
-        f"{discovery_data.get('grant_types_supported')} "
-        f"token_endpoint_auth_methods_supported={discovery_data.get('token_endpoint_auth_methods_supported')} "
-        f"scopes_supported={discovery_data.get('scopes_supported')} "
-        f"token_endpoint={token_endpoint}"
-    )
-
-    resp = requests.post(
-        token_endpoint,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": FPL_OIDC_CLIENT_ID,
-        },
-        timeout=10,
-    )
-    if not resp.ok:
-        # The OAuth2 error body (error / error_description) is safe to
-        # surface - it never echoes the token itself, just why the
-        # provider rejected the request (expired, wrong client, malformed
-        # grant, etc.) - which plain raise_for_status() would discard.
-        try:
-            err = resp.json()
-            detail = f"{err.get('error', '?')}: {err.get('error_description', resp.text[:200])}"
-        except ValueError:
-            detail = resp.text[:200]
-        raise requests.HTTPError(
-            f"{resp.status_code} error from {token_endpoint} - {detail}", response=resp
-        )
-    data = resp.json()
-
-    new_refresh_token = data.get("refresh_token")
-    rotated = new_refresh_token if new_refresh_token and new_refresh_token != refresh_token else None
-    return data["access_token"], rotated
-
-
-def rotate_refresh_token_secret(new_refresh_token: str) -> None:
-    """
-    Persists a rotated refresh token back to this repo's
-    FPL_REFRESH_TOKEN GitHub Actions secret, via the gh CLI (already
-    installed on GitHub-hosted runners) - so the next run doesn't fail
-    with the old, now-invalidated token.
-
-    Needs GH_SECRETS_PAT: a fine-grained personal access token scoped
-    to just this one repo, with only its "Secrets" permission set to
-    read/write - stored as its own GitHub secret, separate from
-    FPL_REFRESH_TOKEN. Silently does nothing outside of GitHub Actions
-    or without that token set - this is a nice-to-have that should
-    never break the actual data pull if it fails.
-
-    The new token is piped in via stdin, never passed as a CLI argument
-    or interpolated into workflow YAML, so it's never written to the
-    process list or a step's logged command line. Failures are caught
-    and reported, never raised - the run this token was fetched for has
-    already succeeded regardless of whether saving it for next time
-    works.
-    """
-    if os.environ.get("GITHUB_ACTIONS") != "true":
-        return
-    pat = os.environ.get("GH_SECRETS_PAT")
-    repo = os.environ.get("GITHUB_REPOSITORY")
-    if not pat or not repo:
-        print("GH_SECRETS_PAT not set - can't persist the rotated refresh token; "
-              "the next run will need a fresh one extracted manually.")
-        return
-
-    try:
-        subprocess.run(
-            ["gh", "secret", "set", "FPL_REFRESH_TOKEN", "--repo", repo],
-            input=new_refresh_token,
-            text=True,
-            check=True,
-            env={**os.environ, "GH_TOKEN": pat},
-            capture_output=True,
-        )
-        print("Rotated FPL_REFRESH_TOKEN saved for next time.")
-    except Exception as e:
-        print(f"Could not save the rotated refresh token: {e}")
-
-
-def get_my_team(access_token: str, entry_id: int) -> dict:
-    """
-    Returns your own current saved picks, chips, and transfer/bank
-    state - including for a gameweek whose deadline hasn't passed
-    yet, unlike the public picks endpoint. Requires an access token
-    from refresh_access_token(). FPL's authenticated endpoints use a
-    custom X-API-Authorization header rather than the standard
-    Authorization header.
-
-    Shape matches get_entry_picks()'s 'picks' list closely enough to
-    be saved the same way, but has no 'entry_history' block - points
-    and rank for a gameweek that hasn't been scored yet don't exist.
-    """
-    resp = requests.get(
-        f"{BASE_URL}/my-team/{entry_id}/",
-        headers={"X-API-Authorization": f"Bearer {access_token}"},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.json()
+# get_entry_picks() for a gameweek whose deadline hasn't passed yet
+# returns a 404: FPL doesn't expose a manager's pending picks publicly,
+# even to the account owner, so rivals can't scout a team before
+# deadline. There's no authenticated workaround: FPL's identity
+# provider (a PingOne-based OIDC flow) only accepts token requests from
+# confidential clients with a client secret, which a public SPA - and
+# by extension a script acting on your behalf - can't legitimately
+# have. Squads simply aren't visible here until each gameweek's
+# deadline passes, same as for any other manager checking a rival's
+# team.
