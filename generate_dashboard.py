@@ -127,7 +127,27 @@ def render_watchlist_pick(pick: dict) -> str:
         trend_parts.append(f'<span class="{pc_cls}">price {pc:+.1f}m</span>')
     trend = f' {" ".join(trend_parts)}' if trend_parts else ""
 
-    return f'{player_link(pick["player_id"], pick["name"])} &mdash; £{pick["price"]}m{trend}'
+    # A watchlist exists to decide whether to actually buy someone, not
+    # just to watch their price - so availability and fixture come
+    # through loudly (same status-dot convention as the squad pitch),
+    # alongside the season-long numbers a single week's form can't show.
+    status_dot = ""
+    if pick.get("status") and pick["status"] != "a":
+        dot_cls = "status-amber" if pick["status"] == "d" else "status-red"
+        chance = pick.get("chance_of_playing")
+        title = pick["status_label"] + (f", {chance}% chance" if chance is not None else "")
+        if pick.get("news"):
+            title += f" &mdash; {pick['news']}"
+        status_dot = f' <span class="status-badge {dot_cls}" title="{title}">&#9679;</span>'
+
+    fixture = f"vs {pick['opponent']} (FDR {pick['difficulty']})" if pick.get("opponent") else "no upcoming fixture"
+
+    return (
+        f'{player_link(pick["player_id"], pick["name"])}{status_dot} &mdash; £{pick["price"]}m{trend}'
+        f'<br><span class="subtitle">{pick["points_per_game"]} PPG &middot; {pick["total_points"]} pts &middot; '
+        f'{pick["selected_by_percent"]}% owned</span>'
+        f'<br><span class="subtitle">Next: {fixture}</span>'
+    )
 
 
 def render_watchlist_card(watchlist: dict) -> str:
@@ -211,6 +231,23 @@ def _squad_line(p: dict) -> str:
         chance = p.get("chance_of_playing")
         status_note = f" [{label}{f', {chance}% chance' if chance is not None else ''}]"
     return f"  - {p['name']}{tag} ({p['position']}) - {fixture}, form {p['form']}, £{p['price']}m{status_note}"
+
+
+def _watchlist_pick_text(pick: dict) -> str:
+    """Same fields as render_watchlist_pick, as plain text for the briefing."""
+    if not pick:
+        return "n/a"
+    if pick.get("found") is False:
+        return f"'{pick['name']}' not found"
+    fixture = f"vs {pick['opponent']} (FDR {pick['difficulty']})" if pick.get("opponent") else "no upcoming fixture"
+    status_note = ""
+    if pick.get("status") and pick["status"] != "a":
+        chance = pick.get("chance_of_playing")
+        status_note = f" [{pick['status_label']}{f', {chance}% chance' if chance is not None else ''}]"
+    return (
+        f"{pick['name']} £{pick['price']}m, {pick['points_per_game']} PPG, {pick['total_points']} pts, "
+        f"{pick['selected_by_percent']}% owned, {fixture}{status_note}"
+    )
 
 
 def _departed_squad_contributions(squad_history: dict[int, list[dict]]) -> list[dict]:
@@ -319,16 +356,12 @@ def build_weekly_briefing(
     if watchlist:
         lines.append("Watchlist (data-driven pick + your manual pick, per position):")
         for pos, picks in watchlist.items():
-            dd = picks.get("data_driven")
-            dd_text = f"{dd['name']} £{dd['price']}m" if dd else "n/a"
+            dd_text = _watchlist_pick_text(picks.get("data_driven"))
             manual = picks.get("manual")
-            if manual and manual.get("found") is False:
-                manual_text = f"'{manual['name']}' not found"
-            elif manual:
-                manual_text = f"{manual['name']} £{manual['price']}m"
-            else:
-                manual_text = "not set"
-            lines.append(f"  - {pos}: data-driven {dd_text} | yours: {manual_text}")
+            manual_text = _watchlist_pick_text(manual) if manual else "not set"
+            lines.append(f"  - {pos}:")
+            lines.append(f"      data-driven: {dd_text}")
+            lines.append(f"      yours: {manual_text}")
         lines.append("")
 
     if formation.get("formation"):
