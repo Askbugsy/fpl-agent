@@ -17,10 +17,10 @@ TEAM_ID = 6738704  # "Real Bugsy United"
 # the dashboard will show that slot as "not found" rather than
 # silently guessing.
 MY_WATCHLIST = {
-    "GK": None,
-    "DEF": None,
-    "MID": None,
-    "FWD": None,
+    "GK": "Kelleher",
+    "DEF": "Rodon",
+    "MID": "Dewsbury-Hall",
+    "FWD": "Richarlison",
 }
 
 # The dashboard's "Discuss with Claude" button copies a fresh weekly
