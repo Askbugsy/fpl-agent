@@ -323,6 +323,28 @@ def save_squad_picks(entry_id: int, gameweek: int, picks_data: dict, player_poin
     conn.close()
 
 
+def clear_pending_gw_points(entry_id: int, gameweek: int) -> None:
+    """
+    Safety net: NULLs out gw_points for every squad_picks row of a
+    gameweek that's still pending (its public picks endpoint just 404'd,
+    meaning the deadline hasn't passed) - in case an earlier run already
+    saved a squad for it with stale/mislabeled points (e.g. from before
+    main.py stopped crediting a pending gameweek with whichever
+    gameweek's points bootstrap-static's event_points happened to
+    reflect at the time). Safe to call every run this branch is hit:
+    once the gameweek is genuinely played, the next successful
+    save_squad_picks() call overwrites these rows with real values via
+    INSERT OR REPLACE anyway, so this only ever un-blanks itself.
+    """
+    conn = get_connection()
+    conn.execute(
+        "UPDATE squad_picks SET gw_points = NULL WHERE entry_id = ? AND gameweek = ?",
+        (entry_id, gameweek),
+    )
+    conn.commit()
+    conn.close()
+
+
 def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict, live_summary: dict | None = None) -> None:
     """
     Saves bank/team value/points/rank for this gameweek. bank/value/
