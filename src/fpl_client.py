@@ -146,7 +146,24 @@ def refresh_access_token(refresh_token: str) -> tuple[str, str | None]:
     """
     discovery = requests.get(f"{FPL_OIDC_AUTHORITY}/.well-known/openid-configuration", timeout=10)
     discovery.raise_for_status()
-    token_endpoint = discovery.json()["token_endpoint"]
+    discovery_data = discovery.json()
+    token_endpoint = discovery_data["token_endpoint"]
+
+    # One-time diagnostic: four fresh, carefully-extracted tokens in a row
+    # have all been rejected with the same "refresh token does not exist"
+    # error, which rules out staleness/rotation-race as the cause. Before
+    # asking for yet another manual extraction, print the provider's own
+    # advertised capabilities - none of this is secret, it's the public
+    # discovery document - to check whether our assumptions about the
+    # grant (form-encoded body, refresh_token grant type, no extra params)
+    # actually match what this provider expects.
+    print(
+        "OIDC discovery: grant_types_supported="
+        f"{discovery_data.get('grant_types_supported')} "
+        f"token_endpoint_auth_methods_supported={discovery_data.get('token_endpoint_auth_methods_supported')} "
+        f"scopes_supported={discovery_data.get('scopes_supported')} "
+        f"token_endpoint={token_endpoint}"
+    )
 
     resp = requests.post(
         token_endpoint,
