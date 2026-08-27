@@ -399,7 +399,7 @@ def build_html() -> str:
 
   <div class="tabs" id="tabBar">
     <button class="tab-btn active" data-tab="squad">Squad</button>
-    <button class="tab-btn" data-tab="today">Recommendations</button>
+    <button class="tab-btn" data-tab="today">Tips</button>
     <button class="tab-btn" data-tab="moves">Moves</button>
     <button class="tab-btn" data-tab="explore">Explore</button>
     <button class="tab-btn" data-tab="history">History</button>
@@ -424,6 +424,16 @@ def build_html() -> str:
     <div class="card">
       <h2>Current Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>
       {"<p>No squad data yet - runs after the current gameweek's picks are published.</p>" if not squad else '''
+      <div class="toggle-row" id="squadToggle">
+        <button class="toggle-btn active" data-metric="points">Points</button>
+        <button class="toggle-btn" data-metric="opponent">Opponent</button>
+        <button class="toggle-btn" data-metric="price">Price</button>
+        <button class="toggle-btn" data-metric="selling_price">Selling</button>
+        <button class="toggle-btn" data-metric="difficulty">FDR</button>
+        <button class="toggle-btn" data-metric="form">Form</button>
+        <button class="toggle-btn" data-metric="selected_by_percent">Own%</button>
+        <button class="toggle-btn" data-metric="price_change">Price &Delta;</button>
+      </div>
       <div class="pitch" id="squadPitch"></div>
       <strong class="block-label">Historical Contributors <span class="subtitle">(players transferred out, and what they contributed while owned)</span></strong>
       <div id="previousSquad"></div>
@@ -633,7 +643,28 @@ function pitchPoints(r) {{
   return r.multiplier > 0 ? (r.gw_points || 0) * r.multiplier : (r.gw_points || 0);
 }}
 
-function squadPitchPlayerHTML(r) {{
+// Current Squad has a toggle to view different metrics per player; History
+// only ever shows points (it's a look back at what happened, not a
+// what-if-I-sell-this-player view), so squadPitchPlayerHTML defaults to
+// 'points' and History's calls just don't pass a metric.
+const SQUAD_METRICS = {{
+  points: {{ label: 'Pts', value: pitchPoints }},
+  opponent: {{ label: 'Opp', value: r => r.opponent || '-' }},
+  price: {{ label: 'Price', value: r => `£${{r.price}}m` }},
+  selling_price: {{ label: 'Selling', value: r => r.selling_price != null ? `£${{r.selling_price}}m` : '-' }},
+  difficulty: {{ label: 'FDR', value: r => r.difficulty != null ? r.difficulty : '-' }},
+  form: {{ label: 'Form', value: r => r.form }},
+  selected_by_percent: {{ label: 'Own%', value: r => `${{r.selected_by_percent}}%` }},
+  price_change: {{ label: 'Price Δ', value: r => {{
+    if (r.price_change == null) return '-';
+    if (r.price_change > 0) return `+£${{r.price_change}}m`;
+    if (r.price_change < 0) return `-£${{Math.abs(r.price_change)}}m`;
+    return '£0.0m';
+  }} }},
+}};
+
+function squadPitchPlayerHTML(r, metric = 'points') {{
+  const m = SQUAD_METRICS[metric];
   const tag = r.is_captain ? ' (C)' : r.is_vice_captain ? ' (V)' : '';
   const photoUrl = `${{PLAYER_PHOTO_BASE}}/110x140/${{r.photo_code}}.png`;
   return `
@@ -641,16 +672,27 @@ function squadPitchPlayerHTML(r) {{
       <img class="pitch-pic" src="${{photoUrl}}" onerror="${{photoOnErrorAttr(r.photo_code)}}" alt="">
       ${{statusDotHTML(r.status, r.news)}}
       <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>${{tag}}<br>
-      <span class="pitch-score">Pts ${{pitchPoints(r)}}</span>
+      <span class="pitch-score">${{m.label}} ${{m.value(r)}}</span>
     </div>`;
 }}
 
-function renderSquadPitch() {{
+function renderSquadPitch(metric) {{
   const byPos = {{GK: [], DEF: [], MID: [], FWD: []}};
   squadData.forEach(r => {{ if (byPos[r.position]) byPos[r.position].push(r); }});
   document.getElementById('squadPitch').innerHTML = SQUAD_POS_ORDER.map(pos =>
-    `<div class="pitch-row">${{byPos[pos].map(squadPitchPlayerHTML).join('')}}</div>`
+    `<div class="pitch-row">${{byPos[pos].map(r => squadPitchPlayerHTML(r, metric)).join('')}}</div>`
   ).join('');
+}}
+
+const squadToggle = document.getElementById('squadToggle');
+if (squadToggle) {{
+  squadToggle.querySelectorAll('.toggle-btn').forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      squadToggle.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderSquadPitch(btn.dataset.metric);
+    }});
+  }});
 }}
 
 function historyBenchRowHTML(r) {{
@@ -702,7 +744,7 @@ function renderHistoryGW(gw) {{
   const byPos = {{GK: [], DEF: [], MID: [], FWD: []}};
   starters.forEach(r => {{ if (byPos[r.position]) byPos[r.position].push(r); }});
   document.getElementById('historyPitch').innerHTML = SQUAD_POS_ORDER.map(pos =>
-    `<div class="pitch-row">${{byPos[pos].map(squadPitchPlayerHTML).join('')}}</div>`
+    `<div class="pitch-row">${{byPos[pos].map(r => squadPitchPlayerHTML(r)).join('')}}</div>`
   ).join('');
   document.getElementById('historyBench').innerHTML = bench.map(historyBenchRowHTML).join('');
   document.getElementById('historyTransfers').innerHTML = historyTransfersHTML(gw);
@@ -754,7 +796,7 @@ function previousSquadHTML() {{
 const previousSquadEl = document.getElementById('previousSquad');
 if (previousSquadEl) previousSquadEl.innerHTML = previousSquadHTML();
 
-if (squadData.length) renderSquadPitch();
+if (squadData.length) renderSquadPitch('points');
 
 const CLAY = '#C1613C', GOOD = '#5B7B4F', BAD = '#B0402A';
 
