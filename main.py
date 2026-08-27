@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures, get_my_team, refresh_access_token
+from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures, get_my_team, refresh_access_token, rotate_refresh_token_secret
 from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist
 from config import TEAM_ID, MY_WATCHLIST
 
@@ -85,7 +85,9 @@ def main():
             if refresh_token:
                 try:
                     print("Trying an authenticated fetch for your pending picks instead...")
-                    access_token = refresh_access_token(refresh_token)
+                    access_token, rotated_refresh_token = refresh_access_token(refresh_token)
+                    if rotated_refresh_token:
+                        rotate_refresh_token_secret(rotated_refresh_token)
                     picks_data = get_my_team(access_token, TEAM_ID)
                     pending_gameweek = True
                     print("Fetched your pending picks via authenticated session.")

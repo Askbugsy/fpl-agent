@@ -41,6 +41,18 @@ jobs:
           # -> Actions if you want that; the pipeline falls back to the
           # public endpoint gracefully if it's not set.
           FPL_REFRESH_TOKEN: ${{ secrets.FPL_REFRESH_TOKEN }}
+          # Optional, only needed alongside FPL_REFRESH_TOKEN above: FPL's
+          # OIDC provider rotates the refresh token on every use, so main.py
+          # tries to save the newly-issued one back over FPL_REFRESH_TOKEN
+          # via `gh secret set`. That call needs write access to this repo's
+          # secrets, which the default GITHUB_TOKEN can't grant no matter
+          # what's in `permissions:` above - it has to be a fine-grained
+          # personal access token, scoped to just this repo with only its
+          # Secrets permission set to read/write, stored as its own secret.
+          # Without it, the pending-squad preview still works the same as
+          # before - you'd just be back to re-extracting a token by hand
+          # whenever you want to use it.
+          GH_SECRETS_PAT: ${{ secrets.GH_SECRETS_PAT }}
         run: python3 main.py
 
       - name: Build the dashboard
