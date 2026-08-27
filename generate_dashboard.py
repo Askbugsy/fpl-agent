@@ -854,7 +854,7 @@ function renderWhatIf() {{
   }});
 
   datasets.push({{
-    label: 'Reality',
+    label: 'Actual',
     data: whatIf.reality.map(r => r.cumulative),
     borderColor: '#2B2620',
     backgroundColor: '#2B2620',
@@ -874,10 +874,10 @@ function renderWhatIf() {{
     const diff = s.total_to_date - realityTotal;
     const diffCls = diff > 0 ? 'text-good' : diff < 0 ? 'text-bad' : 'muted';
     const diffText = diff > 0 ? `+${{diff}}` : `${{diff}}`;
-    return `<div class="squad-row"><strong>GW${{s.start_gw}} squad</strong> &mdash; ${{s.total_to_date}} pts <span class="${{diffCls}}">(${{diffText}} vs reality)</span></div>`;
+    return `<div class="squad-row"><strong>GW${{s.start_gw}} squad</strong> &mdash; ${{s.total_to_date}} pts <span class="${{diffCls}}">(${{diffText}} vs actual)</span></div>`;
   }}).join('');
   document.getElementById('whatIfSummary').innerHTML =
-    `<div class="squad-row"><strong>Reality</strong> &mdash; ${{realityTotal}} pts</div>` + rows;
+    `<div class="squad-row"><strong>Actual</strong> &mdash; ${{realityTotal}} pts</div>` + rows;
 }}
 
 new Chart(document.getElementById('moversChart'), {{
