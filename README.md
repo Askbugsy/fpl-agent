@@ -1,4 +1,4 @@
 # fpl-agent
 
-**Last data pull:** 2026-08-27 10:06 UTC
+**Last data pull:** 2026-08-27 10:08 UTC
 
