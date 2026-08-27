@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from fpl_client import get_authenticated_session, get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures, get_my_team
+from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures, get_my_team, refresh_access_token
 from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist
 from config import TEAM_ID, MY_WATCHLIST
 
@@ -73,17 +73,17 @@ def main():
             # before giving up.
             print(f"Public picks endpoint unavailable for GW{current_gw}: {e}")
 
-            email, password = os.environ.get("FPL_EMAIL"), os.environ.get("FPL_PASSWORD")
-            if email and password:
+            refresh_token = os.environ.get("FPL_REFRESH_TOKEN")
+            if refresh_token:
                 try:
                     print("Trying an authenticated fetch for your pending picks instead...")
-                    session = get_authenticated_session(email, password)
-                    picks_data = get_my_team(session, TEAM_ID)
+                    access_token = refresh_access_token(refresh_token)
+                    picks_data = get_my_team(access_token, TEAM_ID)
                     print("Fetched your pending picks via authenticated session.")
                 except Exception as auth_e:
                     print(f"Authenticated fetch also failed: {auth_e}")
             else:
-                print("FPL_EMAIL/FPL_PASSWORD not set - add these as GitHub Actions secrets "
+                print("FPL_REFRESH_TOKEN not set - add this as a GitHub Actions secret "
                       "to see a pending gameweek's squad before its deadline.")
 
         if picks_data:

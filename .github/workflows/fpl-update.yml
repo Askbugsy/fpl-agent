@@ -35,11 +35,12 @@ jobs:
         env:
           # Optional: only needed to see a pending gameweek's squad before
           # its deadline passes (the public API can't see that for anyone,
-          # even your own team). Add these under Settings -> Secrets and
-          # variables -> Actions if you want that; the pipeline falls back
-          # to the public endpoint gracefully if they're not set.
-          FPL_EMAIL: ${{ secrets.FPL_EMAIL }}
-          FPL_PASSWORD: ${{ secrets.FPL_PASSWORD }}
+          # even your own team). FPL has no password login any more - this
+          # has to be a refresh token extracted from an already-logged-in
+          # browser session. Add it under Settings -> Secrets and variables
+          # -> Actions if you want that; the pipeline falls back to the
+          # public endpoint gracefully if it's not set.
+          FPL_REFRESH_TOKEN: ${{ secrets.FPL_REFRESH_TOKEN }}
         run: python3 main.py
 
       - name: Build the dashboard

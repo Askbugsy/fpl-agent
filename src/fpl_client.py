@@ -97,57 +97,72 @@ def get_entry_summary(entry_id: int) -> dict:
 # doesn't expose a manager's pending picks publicly (so rivals can't
 # scout your team before deadline). The only way to see YOUR OWN
 # pending squad - the one you can still edit - is the authenticated
-# "my-team" endpoint below, which needs a real login.
+# "my-team" endpoint below.
 #
-# main.py only uses this as a fallback, and only if FPL_EMAIL/
-# FPL_PASSWORD are set (meant to come from GitHub Actions secrets,
-# never committed to the repo). Credentials are held in memory only
-# for the duration of one login call - never logged, never written
-# to disk or the database.
+# FPL retired plain email/password login at some point (the old
+# users.premierleague.com login form no longer resolves at all) in
+# favour of a PingOne-based OIDC flow - the same modernization that's
+# why "Sign in with Google" works on the FPL site now. There's no
+# login call this code can make on your behalf any more: a refresh
+# token has to come from an already-logged-in browser session
+# (extracted from localStorage - see the app's OIDC client below),
+# which this code then exchanges for short-lived access tokens.
+#
+# main.py only uses this as a fallback, and only if FPL_REFRESH_TOKEN
+# is set (meant to come from a GitHub Actions secret, never committed
+# to the repo). The token is held in memory only for the duration of
+# the exchange call - never logged, never written to disk or the
+# database. Note some OIDC providers rotate the refresh token on every
+# use, in which case a stored token only keeps working for one run and
+# has to be re-extracted periodically - main.py doesn't currently have
+# a way to write a rotated token back to the GitHub secret.
 
-FPL_LOGIN_URL = "https://users.premierleague.com/accounts/login/"
+FPL_OIDC_AUTHORITY = "https://account.premierleague.com/as"
+FPL_OIDC_CLIENT_ID = "bfcbaf69-aade-4c1b-8f00-c1cb8a193030"
 
 
-def get_authenticated_session(email: str, password: str) -> requests.Session:
+def refresh_access_token(refresh_token: str) -> str:
     """
-    Logs into the real FPL site - the same login your browser uses -
-    and returns a requests.Session carrying the resulting cookies.
-    Needed only for get_my_team() below.
-
-    FPL's login form returns HTTP 200 even on a wrong password (it's
-    a normal form post, not an API), so success isn't judged by
-    status code - it's judged by whether a session cookie actually
-    came back.
+    Exchanges a refresh token for a fresh access token via FPL's OIDC
+    provider, using standard OAuth2 discovery (fetching the provider's
+    own .well-known/openid-configuration for its token endpoint,
+    rather than a hardcoded URL that could go stale) plus the standard
+    refresh_token grant. Returns just the access token string.
     """
-    session = requests.Session()
-    session.post(
-        FPL_LOGIN_URL,
+    discovery = requests.get(f"{FPL_OIDC_AUTHORITY}/.well-known/openid-configuration", timeout=10)
+    discovery.raise_for_status()
+    token_endpoint = discovery.json()["token_endpoint"]
+
+    resp = requests.post(
+        token_endpoint,
         data={
-            "login": email,
-            "password": password,
-            "app": "plfpl-web",
-            "redirect_uri": "https://fantasy.premierleague.com/",
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": FPL_OIDC_CLIENT_ID,
         },
         timeout=10,
     )
-    if "sessionid" not in session.cookies.get_dict():
-        raise RuntimeError(
-            "FPL login did not return a session cookie - check that FPL_EMAIL/FPL_PASSWORD are correct."
-        )
-    return session
+    resp.raise_for_status()
+    return resp.json()["access_token"]
 
 
-def get_my_team(session: requests.Session, entry_id: int) -> dict:
+def get_my_team(access_token: str, entry_id: int) -> dict:
     """
     Returns your own current saved picks, chips, and transfer/bank
     state - including for a gameweek whose deadline hasn't passed
-    yet, unlike the public picks endpoint. Requires an authenticated
-    session from get_authenticated_session().
+    yet, unlike the public picks endpoint. Requires an access token
+    from refresh_access_token(). FPL's authenticated endpoints use a
+    custom X-API-Authorization header rather than the standard
+    Authorization header.
 
     Shape matches get_entry_picks()'s 'picks' list closely enough to
     be saved the same way, but has no 'entry_history' block - points
     and rank for a gameweek that hasn't been scored yet don't exist.
     """
-    resp = session.get(f"{BASE_URL}/my-team/{entry_id}/", timeout=10)
+    resp = requests.get(
+        f"{BASE_URL}/my-team/{entry_id}/",
+        headers={"X-API-Authorization": f"Bearer {access_token}"},
+        timeout=10,
+    )
     resp.raise_for_status()
     return resp.json()
