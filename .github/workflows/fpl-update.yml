@@ -32,6 +32,14 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run the data pull
+        env:
+          # Optional: only needed to see a pending gameweek's squad before
+          # its deadline passes (the public API can't see that for anyone,
+          # even your own team). Add these under Settings -> Secrets and
+          # variables -> Actions if you want that; the pipeline falls back
+          # to the public endpoint gracefully if they're not set.
+          FPL_EMAIL: ${{ secrets.FPL_EMAIL }}
+          FPL_PASSWORD: ${{ secrets.FPL_PASSWORD }}
         run: python3 main.py
 
       - name: Build the dashboard
