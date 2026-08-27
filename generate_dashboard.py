@@ -400,6 +400,19 @@ def build_html() -> str:
     for row in squad:
         row["position"] = POSITION_NAMES.get(row["position"], "?")
 
+    # "Up to £X.Xm" dropdown options, same idea as FPL's own price filter -
+    # built from the actual price range in this snapshot (in tenths of a
+    # million to avoid float rounding) rather than a hardcoded range, so it
+    # stays correct as prices drift over the season.
+    prices_tenths = [round(row["price"] * 10) for row in full_table]
+    step_tenths = 5  # £0.5m steps
+    start_tenths = (min(prices_tenths) // step_tenths) * step_tenths if prices_tenths else 40
+    end_tenths = -(-max(prices_tenths) // step_tenths) * step_tenths if prices_tenths else 150
+    price_filter_options = "".join(
+        f'<option value="{t / 10}">up to &pound;{t / 10:.1f}m</option>'
+        for t in range(start_tenths, end_tenths + step_tenths, step_tenths)
+    )
+
     starters = [r for r in squad if r["multiplier"] > 0]
     bench = [r for r in squad if r["multiplier"] == 0]
     squad_total = sum((r["gw_points"] or 0) * r["multiplier"] for r in starters)
@@ -569,6 +582,9 @@ def build_html() -> str:
                   padding: 5px 10px; font-size: 0.75rem; cursor: pointer; }}
   .toggle-btn.active {{ background: var(--clay); color: #fff; border-color: var(--clay); font-weight: 700; }}
 
+  .price-select {{ background: var(--bg); border: 1px solid var(--border); color: var(--ink-soft); border-radius: 8px;
+                    padding: 5px 10px; font-size: 0.75rem; cursor: pointer; }}
+
   .prior-col {{ display: none; }}
   #fullTable.show-prior .prior-col {{ display: table-cell; }}
 
@@ -712,6 +728,10 @@ def build_html() -> str:
       </div>
       <div class="toggle-row">
         <button class="toggle-btn" id="priorSeasonToggle">Show Last Season</button>
+        <select id="maxPriceFilter" class="price-select">
+          <option value="">Any price</option>
+          {price_filter_options}
+        </select>
       </div>
       <div class="scroll">
         <table id="fullTable">
@@ -1163,9 +1183,13 @@ const keys = ['name','position','price','total_points','form','points_per_game',
 let sortDir = {{}};
 let sortKey = null;
 let positionFilter = 'All';
+let maxPriceFilter = null;
 
 function applyTableFilterAndSort() {{
   let rows = positionFilter === 'All' ? fullTable : fullTable.filter(r => r.position === positionFilter);
+  if (maxPriceFilter !== null) {{
+    rows = rows.filter(r => r.price <= maxPriceFilter);
+  }}
   if (sortKey) {{
     rows = [...rows].sort((a, b) =>
       sortDir[sortKey] ? (a[sortKey] > b[sortKey] ? 1 : -1) : (a[sortKey] < b[sortKey] ? 1 : -1)
@@ -1188,6 +1212,14 @@ document.getElementById('positionFilter').querySelectorAll('.toggle-btn').forEac
     applyTableFilterAndSort();
   }});
 }});
+
+const maxPriceSelect = document.getElementById('maxPriceFilter');
+if (maxPriceSelect) {{
+  maxPriceSelect.addEventListener('change', () => {{
+    maxPriceFilter = maxPriceSelect.value === '' ? null : parseFloat(maxPriceSelect.value);
+    applyTableFilterAndSort();
+  }});
+}}
 
 applyTableFilterAndSort();
 
