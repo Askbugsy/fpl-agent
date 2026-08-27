@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history
 from config import TEAM_ID, MY_WATCHLIST
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -210,6 +210,11 @@ def build_html() -> str:
     manager_stats = get_manager_stats(TEAM_ID)
     next_deadline = get_next_deadline()
     watchlist = get_watchlist(MY_WATCHLIST)
+    squad_history = get_squad_history(TEAM_ID)
+    for rows in squad_history.values():
+        for row in rows:
+            row["position"] = POSITION_NAMES.get(row["position"], "?")
+    squad_history_gws = sorted(squad_history.keys())
 
     formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
 
@@ -218,6 +223,7 @@ def build_html() -> str:
     table_json = json.dumps(full_table)
     profiles_json = json.dumps(profiles)
     squad_json = json.dumps(squad)
+    squad_history_json = json.dumps(squad_history)
     formations_json = json.dumps(formations_by_label)
     best_formation_json = json.dumps(formation.get("formation"))
     photo_base_json = json.dumps(PLAYER_PHOTO_BASE)
@@ -330,6 +336,10 @@ def build_html() -> str:
                   padding: 5px 10px; font-size: 0.75rem; cursor: pointer; }}
   .toggle-btn.active {{ background: var(--clay); color: #fff; border-color: var(--clay); font-weight: 700; }}
 
+  .history-slider-row {{ display: flex; align-items: center; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; }}
+  .history-slider-row input[type="range"] {{ flex: 1; min-width: 160px; accent-color: var(--clay); }}
+  .history-label {{ white-space: nowrap; }}
+
   .status-badge {{ font-size: 0.7rem; }}
   .status-red {{ color: var(--bad); }} .status-amber {{ color: var(--warn); }}
 
@@ -361,6 +371,7 @@ def build_html() -> str:
     <button class="tab-btn" data-tab="today">Recommendations</button>
     <button class="tab-btn" data-tab="moves">Moves</button>
     <button class="tab-btn" data-tab="explore">Explore</button>
+    <button class="tab-btn" data-tab="history">History</button>
   </div>
 
   <div class="tab-panel active" id="tab-squad">
@@ -473,6 +484,22 @@ def build_html() -> str:
     </div>
   </div>
 
+  <div class="tab-panel" id="tab-history">
+    <div class="card">
+      <h2>Squad History <span class="subtitle">(recorded automatically each gameweek)</span></h2>
+      {"<p>No squad history recorded yet &mdash; this fills in automatically each week as the pipeline runs, no action needed.</p>" if not squad_history_gws else f'''
+      <div class="history-slider-row">
+        <input type="range" id="historySlider" min="{squad_history_gws[0]}" max="{squad_history_gws[-1]}" value="{squad_history_gws[-1]}" step="1" {"disabled" if len(squad_history_gws) < 2 else ""}>
+        <div class="history-label"><strong id="historyGwLabel">Gameweek {squad_history_gws[-1]}</strong> <span id="historyPtsLabel" class="subtitle"></span></div>
+      </div>
+      {'<p class="subtitle">Only one gameweek recorded so far &mdash; the slider will start moving once GW2 is in.</p>' if len(squad_history_gws) < 2 else ''}
+      <div class="pitch" id="historyPitch"></div>
+      <strong class="block-label">Bench</strong>
+      <div id="historyBench"></div>
+      '''}
+    </div>
+  </div>
+
   <div id="profileModal" onclick="if(event.target===this) closeProfile()">
     <div class="modal-content">
       <span class="modal-close" onclick="closeProfile()">&times;</span>
@@ -486,6 +513,7 @@ const valuePicks = {value_json};
 const fullTable = {table_json};
 const playerProfiles = {profiles_json};
 const squadData = {squad_json};
+const squadHistory = {squad_history_json};
 const allFormations = {formations_json};
 const bestFormationLabel = {best_formation_json};
 const PLAYER_PHOTO_BASE = {photo_base_json};
@@ -622,6 +650,42 @@ if (squadToggle) {{
       renderSquadPitch(btn.dataset.metric);
     }});
   }});
+}}
+
+function historyBenchRowHTML(r) {{
+  const pts = r.gw_points != null ? r.gw_points : 0;
+  return `
+    <div class="squad-row bench">
+      <img class="player-pic" src="${{pitchPhotoUrl(r.photo_code)}}" onerror="${{photoOnErrorAttr(r.photo_code)}}" alt="">
+      ${{statusDotHTML(r.status, r.news)}}
+      <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>
+      <span class="pos-tag">${{r.position}}</span> &mdash; ${{pts}} pts
+    </div>`;
+}}
+
+function renderHistoryGW(gw) {{
+  const rows = squadHistory[gw];
+  if (!rows) return;
+
+  const starters = rows.filter(r => r.squad_position <= 11);
+  const bench = rows.filter(r => r.squad_position > 11);
+
+  const byPos = {{GK: [], DEF: [], MID: [], FWD: []}};
+  starters.forEach(r => {{ if (byPos[r.position]) byPos[r.position].push(r); }});
+  document.getElementById('historyPitch').innerHTML = SQUAD_POS_ORDER.map(pos =>
+    `<div class="pitch-row">${{byPos[pos].map(r => squadPitchPlayerHTML(r, 'points')).join('')}}</div>`
+  ).join('');
+  document.getElementById('historyBench').innerHTML = bench.map(historyBenchRowHTML).join('');
+
+  const total = starters.reduce((sum, r) => sum + SQUAD_METRICS.points.value(r), 0);
+  document.getElementById('historyGwLabel').textContent = `Gameweek ${{gw}}`;
+  document.getElementById('historyPtsLabel').textContent = `${{total}} pts`;
+}}
+
+const historySlider = document.getElementById('historySlider');
+if (historySlider) {{
+  renderHistoryGW(historySlider.value);
+  historySlider.addEventListener('input', () => renderHistoryGW(historySlider.value));
 }}
 
 if (squadData.length) renderSquadPitch('points');

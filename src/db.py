@@ -499,6 +499,52 @@ def get_latest_squad(entry_id: int) -> list[dict]:
     return squad
 
 
+def get_squad_history(entry_id: int) -> dict:
+    """
+    Returns every gameweek's squad on record for this entry, keyed by
+    gameweek number - the weekly pipeline already saves a fresh
+    squad_picks row-set every time it runs (via save_squad_picks in
+    main.py), so this just reads back everything that's accumulated
+    rather than needing any separate "save a snapshot" step.
+
+    Player identity (name, position, photo, team, status) comes from
+    the latest snapshot, since that rarely changes; each gameweek's
+    role (captain/vice/bench) and points come straight from that
+    gameweek's own squad_picks row, so a past week's numbers stay
+    exactly what actually happened that week regardless of how the
+    player's current form/price has since moved.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    latest_date = conn.execute(
+        "SELECT MAX(snapshot_date) AS d FROM player_snapshots"
+    ).fetchone()["d"]
+    if latest_date is None:
+        conn.close()
+        return {}
+
+    rows = conn.execute(
+        """
+        SELECT sp.gameweek, sp.player_id, sp.squad_position, sp.multiplier,
+               sp.is_captain, sp.is_vice_captain, sp.gw_points,
+               ps.name, ps.position, ps.photo_code, ps.status, ps.news
+        FROM squad_picks sp
+        JOIN player_snapshots ps
+          ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
+        WHERE sp.entry_id = ?
+        ORDER BY sp.gameweek, sp.squad_position
+        """,
+        (latest_date, entry_id),
+    ).fetchall()
+    conn.close()
+
+    history = {}
+    for r in rows:
+        history.setdefault(r["gameweek"], []).append(dict(r))
+    return history
+
+
 def save_teams(teams: list[dict]) -> None:
     """Saves the current team ID -> name mapping, used for readable output."""
     conn = get_connection()
