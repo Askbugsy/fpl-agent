@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios
 from config import TEAM_ID, MY_WATCHLIST
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -242,6 +242,12 @@ def build_html() -> str:
             row["position"] = POSITION_NAMES.get(row["position"], "?")
     squad_history_gws = sorted(squad_history.keys())
 
+    what_if = get_what_if_scenarios(TEAM_ID)
+    what_if_ready = len(what_if.get("scenarios", [])) >= 1 and len(what_if.get("reality", [])) >= 1
+    for scenario in what_if.get("scenarios", []):
+        for p in scenario["squad"]:
+            p["position"] = POSITION_NAMES.get(p["position"], "?")
+
     formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
 
     movers_json = json.dumps(movers)
@@ -250,6 +256,7 @@ def build_html() -> str:
     profiles_json = json.dumps(profiles)
     squad_json = json.dumps(squad)
     squad_history_json = json.dumps(squad_history)
+    what_if_json = json.dumps(what_if)
     formations_json = json.dumps(formations_by_label)
     best_formation_json = json.dumps(formation.get("formation"))
     photo_base_json = json.dumps(PLAYER_PHOTO_BASE)
@@ -403,6 +410,7 @@ def build_html() -> str:
     <button class="tab-btn" data-tab="moves">Moves</button>
     <button class="tab-btn" data-tab="explore">Explore</button>
     <button class="tab-btn" data-tab="history">History</button>
+    <button class="tab-btn" data-tab="whatif">What If</button>
   </div>
 
   <div class="tab-panel active" id="tab-squad">
@@ -535,6 +543,17 @@ def build_html() -> str:
     </div>
   </div>
 
+  <div class="tab-panel" id="tab-whatif">
+    <div class="card">
+      <h2>What Could Have Been <span class="subtitle">(each squad you've held, tracked forward as if never touched again)</span></h2>
+      {"<p>Not enough gameweeks played yet to compare &mdash; this fills in once a couple of gameweeks are on the books.</p>" if not what_if_ready else '''
+      <canvas id="whatIfChart"></canvas>
+      <div id="whatIfSummary" style="margin-top:14px;"></div>
+      <p class="muted" style="font-size:0.75rem;margin-top:10px;">Each line freezes a squad's starting XI, bench, and captain exactly as picked that week, then carries it forward using every player's real points each gameweek since &mdash; captain changes, formation tweaks, and the Bench Boost chip aren't modelled.</p>
+      '''}
+    </div>
+  </div>
+
   <div id="profileModal" onclick="if(event.target===this) closeProfile()">
     <div class="modal-content">
       <span class="modal-close" onclick="closeProfile()">&times;</span>
@@ -549,6 +568,7 @@ const fullTable = {table_json};
 const playerProfiles = {profiles_json};
 const squadData = {squad_json};
 const squadHistory = {squad_history_json};
+const whatIf = {what_if_json};
 const allFormations = {formations_json};
 const bestFormationLabel = {best_formation_json};
 const PLAYER_PHOTO_BASE = {photo_base_json};
@@ -708,6 +728,22 @@ function historyBenchRowHTML(r) {{
 
 const historyGws = Object.keys(squadHistory).map(Number).sort((a, b) => a - b);
 
+// How many points a player has actually contributed to YOUR squad -
+// only counting gameweeks they were genuinely part of squadHistory, so
+// a player bought partway through the season doesn't get credited for
+// points scored (for someone else's team) before you owned them. Their
+// real season total (playerProfiles[id].total_points, shown separately
+// in the profile modal) is untouched by this - that's the universal
+// FPL figure, this is specifically "what have they done for me."
+function squadContributionTotal(playerId) {{
+  let total = 0, weeks = 0;
+  historyGws.forEach(gw => {{
+    const row = squadHistory[gw].find(r => r.player_id === playerId);
+    if (row) {{ total += pitchPoints(row); weeks++; }}
+  }});
+  return weeks > 0 ? {{ total, weeks }} : null;
+}}
+
 function transferListHTML(players) {{
   if (!players.length) return '&mdash;';
   return players.map(r => `<span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>`).join(', ');
@@ -800,6 +836,53 @@ if (squadData.length) renderSquadPitch('points');
 
 const CLAY = '#C1613C', GOOD = '#5B7B4F', BAD = '#B0402A';
 
+function renderWhatIf() {{
+  const canvas = document.getElementById('whatIfChart');
+  if (!canvas || !whatIf.scenarios || !whatIf.scenarios.length || !whatIf.reality || !whatIf.reality.length) return;
+
+  const gws = whatIf.reality.map(r => r.gameweek);
+  const palette = ['#C1613C', '#5B7B4F', '#BF8B32', '#8A8074', '#7A5C99', '#3D7A8A'];
+
+  const datasets = whatIf.scenarios.map((s, i) => {{
+    const byGw = {{}};
+    s.trajectory.forEach(t => {{ byGw[t.gameweek] = t.cumulative; }});
+    return {{
+      label: `GW${{s.start_gw}} squad`,
+      data: gws.map(gw => gw in byGw ? byGw[gw] : null),
+      borderColor: palette[i % palette.length],
+      backgroundColor: palette[i % palette.length],
+      spanGaps: false,
+      tension: 0.15,
+    }};
+  }});
+
+  datasets.push({{
+    label: 'Reality',
+    data: whatIf.reality.map(r => r.cumulative),
+    borderColor: '#2B2620',
+    backgroundColor: '#2B2620',
+    borderWidth: 3,
+    borderDash: [5, 3],
+    tension: 0.15,
+  }});
+
+  new Chart(canvas, {{
+    type: 'line',
+    data: {{ labels: gws.map(gw => `GW${{gw}}`), datasets }},
+    options: {{ plugins: {{ legend: {{ position: 'bottom' }} }} }}
+  }});
+
+  const realityTotal = whatIf.reality[whatIf.reality.length - 1].cumulative;
+  const rows = whatIf.scenarios.map(s => {{
+    const diff = s.total_to_date - realityTotal;
+    const diffCls = diff > 0 ? 'text-good' : diff < 0 ? 'text-bad' : 'muted';
+    const diffText = diff > 0 ? `+${{diff}}` : `${{diff}}`;
+    return `<div class="squad-row"><strong>GW${{s.start_gw}} squad</strong> &mdash; ${{s.total_to_date}} pts <span class="${{diffCls}}">(${{diffText}} vs reality)</span></div>`;
+  }}).join('');
+  document.getElementById('whatIfSummary').innerHTML =
+    `<div class="squad-row"><strong>Reality</strong> &mdash; ${{realityTotal}} pts</div>` + rows;
+}}
+
 new Chart(document.getElementById('moversChart'), {{
   type: 'bar',
   data: {{
@@ -833,6 +916,8 @@ new Chart(document.getElementById('valueChart'), {{
     onClick: (evt, elements) => {{ if (elements.length) openProfile(valuePicks[elements[0].index].player_id); }}
   }}
 }});
+
+renderWhatIf();
 
 const tbody = document.getElementById('tableBody');
 function renderTable(rows) {{
@@ -910,6 +995,11 @@ function openProfile(playerId) {{
     </div>`;
   }}
 
+  const contrib = squadContributionTotal(playerId);
+  const contribRow = contrib
+    ? `<div><span>Contributed to your squad</span><span>${{contrib.total}} pts (${{contrib.weeks}} GW${{contrib.weeks > 1 ? 's' : ''}})</span></div>`
+    : '';
+
   document.getElementById('modalBody').innerHTML = `
     <div class="modal-header">
       <img src="${{photoUrl}}" onerror="${{photoOnErrorAttr(p.photo_code)}}" alt="">
@@ -923,6 +1013,7 @@ function openProfile(playerId) {{
       <div><span>Points/game</span><span>${{p.points_per_game}}</span></div>
       <div><span>Minutes</span><span>${{p.minutes}}</span></div>
       <div><span>Selected by</span><span>${{p.selected_by_percent}}%</span></div>
+      ${{contribRow}}
     </div>
     ${{gwRows}}
     ${{seasonRows}}
