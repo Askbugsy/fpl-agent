@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_element_summary, get_entry_picks, get_entry_summary, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, save_player_gw_history, clear_pending_gw_points, clear_pending_manager_stats, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_squad_alltime_player_ids
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_live_manager_summary, save_gameweek_summary, save_player_gw_history, clear_pending_gw_points, clear_pending_manager_stats, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_squad_alltime_player_ids
 from config import TEAM_ID, MY_WATCHLIST
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -62,20 +62,25 @@ def main():
 
     if current_gw:
         print(f"Fetching your squad (Team ID {TEAM_ID}) for Gameweek {current_gw}...")
+
+        # The live manager summary (/entry/{id}/) isn't gated behind a
+        # gameweek's deadline the way picks are - it's always available,
+        # so fetch it up front rather than nesting it inside the picks
+        # try/except. That way total points / overall rank / gw rank
+        # keep updating even while this gameweek's squad is still
+        # pending, instead of freezing at last week's numbers until the
+        # deadline passes.
+        live_summary = None
+        try:
+            live_summary = get_entry_summary(TEAM_ID)
+        except Exception as e:
+            print(f"Could not fetch live manager summary: {e}\n")
+
         try:
             picks_data = get_entry_picks(TEAM_ID, current_gw)
 
             player_points = {p["id"]: p["event_points"] for p in players}
             save_squad_picks(TEAM_ID, current_gw, picks_data, player_points)
-
-            live_summary = None
-            try:
-                live_summary = get_entry_summary(TEAM_ID)
-            except Exception as e:
-                # Rank still saves from entry_history below, just frozen
-                # at whenever that gameweek was scored rather than live.
-                print(f"Could not fetch live rank: {e}\n")
-
             save_entry_summary(TEAM_ID, current_gw, picks_data.get("entry_history", {}), live_summary)
             print("Squad saved.\n")
         except Exception as e:
@@ -94,6 +99,15 @@ def main():
             # show a fabricated total until the real fetch above succeeds.
             clear_pending_gw_points(TEAM_ID, current_gw)
             clear_pending_manager_stats(TEAM_ID, current_gw)
+
+            # Bank/team value/gw points genuinely aren't known yet for a
+            # pending gameweek, but total points/overall rank/gw rank are
+            # live standings that exist independently of this gameweek's
+            # result - save whatever the live summary call above got,
+            # so the dashboard's cumulative view stays current instead of
+            # showing last week's total all week.
+            if live_summary:
+                save_live_manager_summary(TEAM_ID, current_gw, live_summary)
 
     # Keeps the "What Could Have Been" trajectories current: only the
     # players who've ever actually been in your squad (a season's worth
@@ -175,7 +189,7 @@ def main():
         print(f"  Gameweek {deadline['gameweek']}: {deadline['deadline_time']}")
 
     print("\n=== Watchlist ===")
-    watchlist = get_watchlist(MY_WATCHLIST)
+    watchlist = get_watchlist(TEAM_ID, MY_WATCHLIST)
     for pos, picks in watchlist.items():
         dd = picks["data_driven"]
         if dd and dd["form_change"] is not None:

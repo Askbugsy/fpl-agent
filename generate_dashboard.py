@@ -147,6 +147,31 @@ def render_watchlist_pick(pick: dict) -> str:
         f'<br><span class="subtitle">{pick["points_per_game"]} PPG &middot; {pick["total_points"]} pts &middot; '
         f'{pick["selected_by_percent"]}% owned</span>'
         f'<br><span class="subtitle">Next: {fixture}</span>'
+        f'{_render_swap_line(pick)}'
+    )
+
+
+def _render_swap_line(pick: dict) -> str:
+    """
+    The other half of "should I buy this": who in your actual squad
+    you'd realistically drop for them, budget-checked against their
+    real selling price (post sell-on tax) plus your bank - see
+    get_watchlist's swap_candidate() for the underlying logic.
+    """
+    swap = pick.get("swap_suggestion")
+    if not swap:
+        return ""
+    if swap.get("already_owned"):
+        return '<br><span class="subtitle">Already in your squad</span>'
+    if swap.get("affordable"):
+        return (
+            f'<br><span class="subtitle text-good">Swap idea: OUT {swap["out_name"]} '
+            f'(form {swap["out_form"]}) &rarr; IN {pick["name"]} &mdash; '
+            f'£{swap["budget_after"]}m left in the bank</span>'
+        )
+    return (
+        f'<br><span class="subtitle">Need &pound;{swap["shortfall"]}m more to afford '
+        f'(vs selling {swap["out_name"]})</span>'
     )
 
 
@@ -244,9 +269,17 @@ def _watchlist_pick_text(pick: dict) -> str:
     if pick.get("status") and pick["status"] != "a":
         chance = pick.get("chance_of_playing")
         status_note = f" [{pick['status_label']}{f', {chance}% chance' if chance is not None else ''}]"
+    swap = pick.get("swap_suggestion")
+    swap_note = ""
+    if swap and swap.get("already_owned"):
+        swap_note = " (already in your squad)"
+    elif swap and swap.get("affordable"):
+        swap_note = f" (swap idea: OUT {swap['out_name']} form {swap['out_form']}, £{swap['budget_after']}m left after)"
+    elif swap:
+        swap_note = f" (need £{swap['shortfall']}m more, vs selling {swap['out_name']})"
     return (
         f"{pick['name']} £{pick['price']}m, {pick['points_per_game']} PPG, {pick['total_points']} pts, "
-        f"{pick['selected_by_percent']}% owned, {fixture}{status_note}"
+        f"{pick['selected_by_percent']}% owned, {fixture}{status_note}{swap_note}"
     )
 
 
@@ -310,6 +343,8 @@ def build_weekly_briefing(
             lines.append(gw_line + ".")
         else:
             lines.append(f"Gameweek {manager_stats.get('gameweek', '?')} hasn't been played yet.")
+        if manager_stats.get("total_points") is not None:
+            lines.append(f"Total points this season: {manager_stats['total_points']}.")
         if manager_stats.get("overall_rank"):
             lines.append(f"Overall rank: {manager_stats['overall_rank']:,}.")
         if manager_stats.get("bank") is not None and manager_stats.get("team_value") is not None:
@@ -465,9 +500,12 @@ def build_html() -> str:
     highest_score_display = manager_stats.get("highest_score") if manager_stats.get("highest_score") is not None else "-"
     team_value_display = f"£{manager_stats['team_value']}m" if manager_stats.get("team_value") is not None else "-"
     bank_display = f"£{manager_stats['bank']}m" if manager_stats.get("bank") is not None else "-"
+    total_points_display = manager_stats.get("total_points") if manager_stats.get("total_points") is not None else "-"
+    overall_rank_display = f"{manager_stats['overall_rank']:,}" if manager_stats.get("overall_rank") else "-"
+    gw_rank_display = f"{manager_stats['gw_rank']:,}" if manager_stats.get("gw_rank") else "-"
 
     next_deadline = get_next_deadline()
-    watchlist = get_watchlist(MY_WATCHLIST)
+    watchlist = get_watchlist(TEAM_ID, MY_WATCHLIST)
     squad_history = get_squad_history(TEAM_ID)
     for rows in squad_history.values():
         for row in rows:
@@ -670,12 +708,22 @@ def build_html() -> str:
     <div class="card">
       <h2>Manager Stats &mdash; Gameweek {manager_stats.get('gameweek', '?')}</h2>
       {"<p>No manager data yet.</p>" if not manager_stats else f'''
-      <div class="modal-stats">
+      <div class="toggle-row" id="managerStatsToggle">
+        <button class="toggle-btn active" data-view="season">Season</button>
+        <button class="toggle-btn" data-view="week">This Week</button>
+      </div>
+      <div class="modal-stats stats-view" data-view="season">
+        <div><span>Total points</span><span><strong>{total_points_display}</strong></span></div>
+        <div><span>Overall rank</span><span>{overall_rank_display}</span></div>
+        <div><span>Squad value</span><span>{team_value_display}</span></div>
+        <div><span>Bank</span><span>{bank_display}</span></div>
+      </div>
+      <div class="modal-stats stats-view" data-view="week" style="display:none;">
         <div><span>Your points</span><span><strong>{gw_points_display}</strong></span></div>
         <div><span>League average</span><span>{average_score_display}</span></div>
         <div><span>League highest</span><span>{highest_score_display}</span></div>
-        <div><span>GW rank</span><span>{f"{manager_stats['gw_rank']:,}" if manager_stats.get('gw_rank') else '-'}</span></div>
-        <div><span>Overall rank</span><span>{f"{manager_stats['overall_rank']:,}" if manager_stats.get('overall_rank') else '-'}</span></div>
+        <div><span>GW rank</span><span>{gw_rank_display}</span></div>
+        <div><span>Overall rank</span><span>{overall_rank_display}</span></div>
         <div><span>Squad value</span><span>{team_value_display}</span></div>
         <div><span>Bank</span><span>{bank_display}</span></div>
       </div>
@@ -982,6 +1030,19 @@ function renderSquadPitch(metric) {{
   document.getElementById('squadPitch').innerHTML = SQUAD_POS_ORDER.map(pos =>
     `<div class="pitch-row">${{byPos[pos].map(r => squadPitchPlayerHTML(r, metric)).join('')}}</div>`
   ).join('');
+}}
+
+const managerStatsToggle = document.getElementById('managerStatsToggle');
+if (managerStatsToggle) {{
+  managerStatsToggle.querySelectorAll('.toggle-btn').forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      managerStatsToggle.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.stats-view').forEach(el => {{
+        el.style.display = el.dataset.view === btn.dataset.view ? '' : 'none';
+      }});
+    }});
+  }});
 }}
 
 const squadToggle = document.getElementById('squadToggle');
