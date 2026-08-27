@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS entry_summary (
     gw_points INTEGER,
     gw_rank INTEGER,        -- your rank for this gameweek specifically
     overall_rank INTEGER,
+    total_points INTEGER,   -- cumulative points for the season so far
     PRIMARY KEY (entry_id, gameweek)
 );
 
@@ -134,6 +135,7 @@ def get_connection() -> sqlite3.Connection:
         "ALTER TABLE player_snapshots ADD COLUMN chance_of_playing INTEGER",
         "ALTER TABLE player_snapshots ADD COLUMN news TEXT",
         "ALTER TABLE gameweek_summary ADD COLUMN deadline_time TEXT",
+        "ALTER TABLE entry_summary ADD COLUMN total_points INTEGER",
     ):
         try:
             conn.execute(stmt)
@@ -378,20 +380,24 @@ def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict, live_s
     endpoint the app itself reads) has 'summary_event_rank' and
     'summary_overall_rank', which do keep moving - prefer those when
     available, falling back to entry_history's frozen values only if
-    the live call wasn't made.
+    the live call wasn't made. total_points (cumulative season score)
+    gets the same treatment via live_summary's 'summary_overall_points',
+    falling back to entry_history's 'total_points'.
     """
     if live_summary:
         gw_rank = live_summary.get("summary_event_rank")
         overall_rank = live_summary.get("summary_overall_rank")
+        total_points = live_summary.get("summary_overall_points")
     else:
         gw_rank = entry_history.get("rank")
         overall_rank = entry_history.get("overall_rank")
+        total_points = entry_history.get("total_points")
 
     conn = get_connection()
     conn.execute(
         """INSERT OR REPLACE INTO entry_summary
-           (entry_id, gameweek, bank, team_value, gw_points, gw_rank, overall_rank)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (entry_id, gameweek, bank, team_value, gw_points, gw_rank, overall_rank, total_points)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             entry_id, gameweek,
             entry_history.get("bank", 0) / 10,
@@ -399,6 +405,36 @@ def save_entry_summary(entry_id: int, gameweek: int, entry_history: dict, live_s
             entry_history.get("points"),
             gw_rank,
             overall_rank,
+            total_points,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_live_manager_summary(entry_id: int, gameweek: int, live_summary: dict) -> None:
+    """
+    Sibling to save_entry_summary, for when a gameweek's picks aren't
+    fetchable yet (still pending) but the live manager summary is -
+    that endpoint isn't gated behind the deadline the way picks are.
+    Upserts only total_points/gw_rank/overall_rank, since those are
+    live standings that exist independently of this gameweek's result;
+    bank/team_value/gw_points genuinely aren't known yet and are left
+    NULL (or untouched, if a row already exists) rather than guessed.
+    """
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO entry_summary (entry_id, gameweek, total_points, gw_rank, overall_rank)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(entry_id, gameweek) DO UPDATE SET
+               total_points = excluded.total_points,
+               gw_rank = excluded.gw_rank,
+               overall_rank = excluded.overall_rank""",
+        (
+            entry_id, gameweek,
+            live_summary.get("summary_overall_points"),
+            live_summary.get("summary_event_rank"),
+            live_summary.get("summary_overall_rank"),
         ),
     )
     conn.commit()
@@ -433,7 +469,12 @@ def get_manager_stats(entry_id: int) -> dict:
     """
     Your stats for the latest gameweek, alongside the league-wide
     average/highest score for that same gameweek - the comparison
-    that makes your own number mean something.
+    that makes your own number mean something. Also includes
+    total_points, the cumulative season score - for a gameweek still
+    in progress (or not yet played) gw_points sits at 0 while
+    total_points already reflects everything scored so far, so the
+    dashboard can lead with the number that's actually meaningful at
+    that moment.
     """
     conn = get_connection()
     conn.row_factory = sqlite3.Row
@@ -463,6 +504,7 @@ def get_manager_stats(entry_id: int) -> dict:
         "team_value": entry["team_value"] if entry else None,
         "average_score": gw_summary["average_score"] if gw_summary else None,
         "highest_score": gw_summary["highest_score"] if gw_summary else None,
+        "total_points": entry["total_points"] if entry else None,
     }
 
 
@@ -1136,7 +1178,7 @@ def get_next_deadline() -> dict:
 POSITION_CODES = {"GK": 1, "DEF": 2, "MID": 3, "FWD": 4}
 
 
-def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
+def get_watchlist(entry_id: int, manual_picks: dict, min_minutes: int = 60) -> dict:
     """
     Builds the watchlist: one data-driven pick per position (highest
     points-per-game-per-£1m, same "value score" formula used
@@ -1157,6 +1199,10 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
       - opponent / difficulty - their next fixture and FPL's own FDR,
         same lookup used for captain suggestions and the squad pitch,
         so you can see at a glance whether now is a good time to buy.
+      - swap_suggestion - which of YOUR squad's same-position players
+        you'd actually drop for this one, budget-aware (their selling
+        price, post sell-on tax, plus your bank), same £100m-constraint
+        logic get_transfer_suggestions uses. See _swap_candidate below.
 
     Price and form use different baselines, since they move on
     different clocks: price shifts day to day with transfer-market
@@ -1182,6 +1228,75 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
     latest_date = dates[0]["snapshot_date"]
     previous_date = dates[1]["snapshot_date"] if len(dates) > 1 else None
     form_baseline_date = _form_baseline_date(conn, latest_date)
+
+    # Squad + bank, so each pick can carry a budget-aware "who would you
+    # actually drop for this" suggestion. Left empty/zero if there's no
+    # squad on record yet (e.g. very start of season) - swap_suggestion
+    # then comes back None for every pick rather than erroring.
+    latest_squad_gw = conn.execute(
+        "SELECT MAX(gameweek) AS gw FROM squad_picks WHERE entry_id = ?", (entry_id,)
+    ).fetchone()["gw"]
+    squad_rows = []
+    bank = 0.0
+    owned_ids = set()
+    if latest_squad_gw is not None:
+        bank_row = conn.execute(
+            "SELECT bank FROM entry_summary WHERE entry_id = ? AND gameweek = ?",
+            (entry_id, latest_squad_gw),
+        ).fetchone()
+        bank = bank_row["bank"] if bank_row and bank_row["bank"] is not None else 0.0
+        squad_rows = [
+            dict(r) for r in conn.execute(
+                """SELECT sp.player_id, sp.selling_price, cur.name, cur.position,
+                          cur.price AS current_price, cur.form, cur.points_per_game
+                   FROM squad_picks sp
+                   JOIN player_snapshots cur ON sp.player_id = cur.player_id AND cur.snapshot_date = ?
+                   WHERE sp.entry_id = ? AND sp.gameweek = ?""",
+                (latest_date, entry_id, latest_squad_gw),
+            ).fetchall()
+        ]
+        owned_ids = {s["player_id"] for s in squad_rows}
+
+    def swap_candidate(position_code: int, target_player_id: int, target_price: float) -> dict | None:
+        """
+        Which of your squad's players in this position you'd actually
+        sell to afford target_price, using their real selling price
+        (post sell-on tax) plus your current bank - the same budget
+        math get_transfer_suggestions uses, just aimed at one specific
+        watchlist target instead of a generic candidate search.
+
+        Among everyone you could afford to swap for this player,
+        suggests your weakest one by current form (the most sensible
+        one to actually let go). If none are affordable right now,
+        reports the shortfall against your most valuable player in
+        that position instead, so it reads as "how close am I" rather
+        than just disappearing.
+        """
+        if target_player_id in owned_ids:
+            return {"already_owned": True}
+        same_position = [s for s in squad_rows if s["position"] == position_code]
+        if not same_position:
+            return None
+
+        def sell_value(s: dict) -> float:
+            return (s["selling_price"] or s["current_price"]) + bank
+
+        affordable = [s for s in same_position if round(sell_value(s), 1) >= target_price]
+        if not affordable:
+            closest = max(same_position, key=sell_value)
+            return {
+                "affordable": False,
+                "out_player_id": closest["player_id"], "out_name": closest["name"],
+                "shortfall": round(target_price - sell_value(closest), 1),
+            }
+
+        out = min(affordable, key=lambda s: s["form"])
+        return {
+            "affordable": True,
+            "out_player_id": out["player_id"], "out_name": out["name"],
+            "out_form": out["form"], "out_points_per_game": out["points_per_game"],
+            "budget_after": round(sell_value(out) - target_price, 1),
+        }
 
     def enrich_pick(row: dict) -> dict:
         """
@@ -1240,6 +1355,8 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
             (latest_date, pos_code, min_minutes),
         ).fetchone()
 
+        data_driven_pick = enrich_pick(data_driven) if data_driven else None
+
         manual_name = (manual_picks or {}).get(label)
         manual_pick = None
         if manual_name:
@@ -1251,8 +1368,12 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
             ).fetchone()
             manual_pick = enrich_pick(manual_row) if manual_row else {"found": False, "name": manual_name}
 
+        for pick in (data_driven_pick, manual_pick):
+            if pick and pick.get("player_id") is not None:
+                pick["swap_suggestion"] = swap_candidate(pos_code, pick["player_id"], pick["price"])
+
         watchlist[label] = {
-            "data_driven": enrich_pick(data_driven) if data_driven else None,
+            "data_driven": data_driven_pick,
             "manual": manual_pick,
         }
 
