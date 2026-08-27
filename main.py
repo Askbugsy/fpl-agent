@@ -40,10 +40,24 @@ def main():
     save_gameweek_summary(data["events"])
     print(f"Saved {len(fixtures)} fixtures with difficulty ratings.\n")
 
-    # Work out the current gameweek from the bootstrap data
-    current_gw = next((e["id"] for e in data["events"] if e["is_current"]), None)
+    # Work out which gameweek to pull your squad for. FPL keeps
+    # is_current=True on a gameweek from kickoff all the way through
+    # to the next one's kickoff - including the whole gap after it's
+    # finished, while you're setting up transfers for next week. So
+    # is_current alone would keep showing last week's (locked, stale)
+    # squad even after you've made changes for the upcoming gameweek.
+    # Prefer a gameweek that's actually live (is_current and not yet
+    # finished) - during a live gameweek you want that one, not next
+    # week's still-editable squad. Otherwise prefer is_next, since
+    # that's the gameweek you can currently edit and whose picks
+    # reflect your latest transfers. Fall back to is_current even if
+    # finished only for the end-of-season case where there's no next
+    # gameweek at all.
+    current_gw = next((e["id"] for e in data["events"] if e["is_current"] and not e["finished"]), None)
     if current_gw is None:
         current_gw = next((e["id"] for e in data["events"] if e["is_next"]), None)
+    if current_gw is None:
+        current_gw = next((e["id"] for e in data["events"] if e["is_current"]), None)
 
     if current_gw:
         print(f"Fetching your squad (Team ID {TEAM_ID}) for Gameweek {current_gw}...")

@@ -435,6 +435,8 @@ def build_html() -> str:
         <button class="toggle-btn" data-metric="price_change">Price &Delta;</button>
       </div>
       <div class="pitch" id="squadPitch"></div>
+      <strong class="block-label">Previous Squad <span class="subtitle">(players transferred out, and what they contributed while owned)</span></strong>
+      <div id="previousSquad"></div>
       '''}
     </div>
   </div>
@@ -749,6 +751,42 @@ if (historySlider) {{
   renderHistoryGW(historySlider.value);
   historySlider.addEventListener('input', () => renderHistoryGW(historySlider.value));
 }}
+
+function previousSquadHTML() {{
+  if (!historyGws.length) return '';
+  const latestGw = historyGws[historyGws.length - 1];
+  const currentIds = new Set(squadHistory[latestGw].map(r => r.player_id));
+
+  // Walk every recorded gameweek and tally contributions for anyone who
+  // isn't in the current squad - if they were transferred out and later
+  // bought back, they're in currentIds again and correctly excluded here.
+  const departed = new Map();
+  historyGws.forEach(gw => {{
+    squadHistory[gw].forEach(r => {{
+      if (currentIds.has(r.player_id)) return;
+      const pts = r.multiplier > 0 ? (r.gw_points || 0) * r.multiplier : (r.gw_points || 0);
+      if (!departed.has(r.player_id)) {{
+        departed.set(r.player_id, {{ ...r, totalPoints: 0, lastGw: gw }});
+      }}
+      const entry = departed.get(r.player_id);
+      entry.totalPoints += pts;
+      entry.lastGw = gw;
+    }});
+  }});
+
+  const rows = Array.from(departed.values()).sort((a, b) => b.lastGw - a.lastGw || b.totalPoints - a.totalPoints);
+  if (!rows.length) return '<p class="muted" style="font-size:0.85rem;">No transfers made yet this season.</p>';
+
+  return rows.map(r => `
+    <div class="squad-row bench">
+      <img class="player-pic" src="${{pitchPhotoUrl(r.photo_code)}}" onerror="${{photoOnErrorAttr(r.photo_code)}}" alt="">
+      <span class="player-link" onclick="openProfile(${{r.player_id}})">${{r.name}}</span>
+      <span class="pos-tag">${{r.position}}</span> &mdash; ${{r.totalPoints}} pts contributed (through GW${{r.lastGw}})
+    </div>`).join('');
+}}
+
+const previousSquadEl = document.getElementById('previousSquad');
+if (previousSquadEl) previousSquadEl.innerHTML = previousSquadHTML();
 
 if (squadData.length) renderSquadPitch('points');
 
