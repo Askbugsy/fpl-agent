@@ -575,6 +575,9 @@ def build_html() -> str:
   .hero h2 {{ font-size: 0.95rem; color: var(--ink-soft); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }}
   .countdown {{ font-family: "Fraunces", Georgia, serif; font-size: 2.4rem; font-weight: 700; color: var(--clay); letter-spacing: 0.01em; }}
   .countdown.urgent {{ color: var(--bad); }}
+  .hero-cta.with-divider {{ margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }}
+  .hero-cta .toggle-btn {{ padding: 8px 16px; }}
+  .hero-cta .subtitle {{ margin-bottom: 8px; }}
 
   .tabs {{ position: sticky; top: 0; z-index: 10; background: var(--bg); display: flex; gap: 6px;
            padding: 8px 16px; overflow-x: auto; border-bottom: 1px solid var(--border); }}
@@ -682,12 +685,17 @@ def build_html() -> str:
     <div class="updated">Latest data: {latest_date}</div>
   </header>
 
-  {"" if not next_deadline else f'''
   <div class="hero">
+    {"" if not next_deadline else f'''
     <h2>Gameweek {next_deadline["gameweek"]} deadline</h2>
     <div id="countdown" class="countdown" data-deadline="{next_deadline["deadline_time"]}">calculating&hellip;</div>
+    '''}
+    <div class="hero-cta{' with-divider' if next_deadline else ''}">
+      <p class="subtitle">{"Not sure what to do before it? " if next_deadline else ""}Talk through your squad, captain pick, and transfer options.</p>
+      <button class="toggle-btn active" id="discussClaudeBtn">Discuss with Claude</button>
+      <div id="discussStatus" class="subtitle"></div>
+    </div>
   </div>
-  '''}
 
   <div class="tabs" id="tabBar">
     <button class="tab-btn active" data-tab="squad">Squad</button>
@@ -698,13 +706,6 @@ def build_html() -> str:
   </div>
 
   <div class="tab-panel active" id="tab-squad">
-    <div class="card">
-      <h2>Discuss with Claude</h2>
-      <p class="subtitle" style="margin-bottom:10px;">Copies this week's briefing &mdash; your stats, captain pick, transfer suggestions, chip timing &mdash; to your clipboard and opens a chat to paste it into.</p>
-      <button class="toggle-btn active" id="discussClaudeBtn" style="padding:8px 16px;">Discuss with Claude</button>
-      <div id="discussStatus" class="subtitle" style="margin-top:8px;"></div>
-    </div>
-
     <div class="card">
       <h2>Manager Stats &mdash; Gameweek {manager_stats.get('gameweek', '?')}</h2>
       {"<p>No manager data yet.</p>" if not manager_stats else f'''
