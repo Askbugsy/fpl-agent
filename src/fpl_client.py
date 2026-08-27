@@ -157,7 +157,19 @@ def refresh_access_token(refresh_token: str) -> tuple[str, str | None]:
         },
         timeout=10,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # The OAuth2 error body (error / error_description) is safe to
+        # surface - it never echoes the token itself, just why the
+        # provider rejected the request (expired, wrong client, malformed
+        # grant, etc.) - which plain raise_for_status() would discard.
+        try:
+            err = resp.json()
+            detail = f"{err.get('error', '?')}: {err.get('error_description', resp.text[:200])}"
+        except ValueError:
+            detail = resp.text[:200]
+        raise requests.HTTPError(
+            f"{resp.status_code} error from {token_endpoint} - {detail}", response=resp
+        )
     data = resp.json()
 
     new_refresh_token = data.get("refresh_token")
