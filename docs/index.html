@@ -85,7 +85,12 @@
   .modal-gw-table { width: 100%; font-size: 0.8rem; margin-top: 10px; }
   .modal-gw-table th, .modal-gw-table td { padding: 4px 6px; text-align: center; border-bottom: 1px solid var(--border); }
 
-  .pitch { background: linear-gradient(180deg, #6B8F5C, #5B7B4F); border-radius: 12px; padding: 14px 6px; margin: 12px 0; }
+  .pitch {
+    background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTUwIj4KPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utb3BhY2l0eT0iMC4zNSIgc3Ryb2tlLXdpZHRoPSIxIj4KPHJlY3QgeD0iMyIgeT0iMyIgd2lkdGg9Ijk0IiBoZWlnaHQ9IjE0NCIvPgo8bGluZSB4MT0iMyIgeTE9Ijc1IiB4Mj0iOTciIHkyPSI3NSIvPgo8Y2lyY2xlIGN4PSI1MCIgY3k9Ijc1IiByPSIxMyIvPgo8cmVjdCB4PSIyNCIgeT0iMyIgd2lkdGg9IjUyIiBoZWlnaHQ9IjIwIi8+CjxyZWN0IHg9IjM4IiB5PSIzIiB3aWR0aD0iMjQiIGhlaWdodD0iOCIvPgo8cGF0aCBkPSJNIDM4IDIzIEEgMTMgMTMgMCAwIDEgNjIgMjMiLz4KPHJlY3QgeD0iMjQiIHk9IjEyNyIgd2lkdGg9IjUyIiBoZWlnaHQ9IjIwIi8+CjxyZWN0IHg9IjM4IiB5PSIxMzkiIHdpZHRoPSIyNCIgaGVpZ2h0PSI4Ii8+CjxwYXRoIGQ9Ik0gMzggMTI3IEEgMTMgMTMgMCAwIDAgNjIgMTI3Ii8+CjwvZz4KPGcgZmlsbD0iI2ZmZmZmZiIgZmlsbC1vcGFjaXR5PSIwLjM1Ij4KPGNpcmNsZSBjeD0iNTAiIGN5PSI3NSIgcj0iMC44Ii8+CjxjaXJjbGUgY3g9IjUwIiBjeT0iMTYiIHI9IjAuOCIvPgo8Y2lyY2xlIGN4PSI1MCIgY3k9IjEzNCIgcj0iMC44Ii8+CjwvZz4KPC9zdmc+"), linear-gradient(180deg, #6B8F5C, #5B7B4F);
+    background-size: 100% 100%, 100% 100%;
+    background-repeat: no-repeat, no-repeat;
+    border-radius: 12px; padding: 14px 6px; margin: 12px 0;
+  }
   .pitch-row { display: flex; justify-content: space-around; flex-wrap: wrap; margin: 8px 0; }
   .pitch-player { background: rgba(255,255,255,0.92); border-radius: 8px; padding: 5px 9px; text-align: center; font-size: 0.75rem; min-width: 62px; }
   .pitch-player.is-captain { border: 2px solid var(--clay); }
@@ -290,6 +295,8 @@
       <div class="pitch" id="historyPitch"></div>
       <strong class="block-label">Bench</strong>
       <div id="historyBench"></div>
+      <strong class="block-label">Transfers <span class="subtitle">(vs the previous recorded gameweek)</span></strong>
+      <div id="historyTransfers"></div>
       
     </div>
   </div>
@@ -457,7 +464,35 @@ function historyBenchRowHTML(r) {
     </div>`;
 }
 
+const historyGws = Object.keys(squadHistory).map(Number).sort((a, b) => a - b);
+
+function transferListHTML(players) {
+  if (!players.length) return '&mdash;';
+  return players.map(r => `<span class="player-link" onclick="openProfile(${r.player_id})">${r.name}</span>`).join(', ');
+}
+
+function historyTransfersHTML(gw) {
+  const idx = historyGws.indexOf(gw);
+  if (idx <= 0) {
+    return '<p class="muted" style="font-size:0.85rem;">Starting squad &mdash; no earlier recorded gameweek to compare against.</p>';
+  }
+  const prevGw = historyGws[idx - 1];
+  const curRows = squadHistory[gw], prevRows = squadHistory[prevGw];
+  const curIds = new Set(curRows.map(r => r.player_id));
+  const prevIds = new Set(prevRows.map(r => r.player_id));
+  const inPlayers = curRows.filter(r => !prevIds.has(r.player_id));
+  const outPlayers = prevRows.filter(r => !curIds.has(r.player_id));
+
+  if (!inPlayers.length && !outPlayers.length) {
+    return `<p class="muted" style="font-size:0.85rem;">No transfers made since Gameweek ${prevGw}.</p>`;
+  }
+  return `
+    <div class="squad-row"><span class="text-good">IN:</span> ${transferListHTML(inPlayers)}</div>
+    <div class="squad-row"><span class="text-bad">OUT:</span> ${transferListHTML(outPlayers)}</div>`;
+}
+
 function renderHistoryGW(gw) {
+  gw = Number(gw);
   const rows = squadHistory[gw];
   if (!rows) return;
 
@@ -470,6 +505,7 @@ function renderHistoryGW(gw) {
     `<div class="pitch-row">${byPos[pos].map(r => squadPitchPlayerHTML(r, 'points')).join('')}</div>`
   ).join('');
   document.getElementById('historyBench').innerHTML = bench.map(historyBenchRowHTML).join('');
+  document.getElementById('historyTransfers').innerHTML = historyTransfersHTML(gw);
 
   const total = starters.reduce((sum, r) => sum + SQUAD_METRICS.points.value(r), 0);
   document.getElementById('historyGwLabel').textContent = `Gameweek ${gw}`;
