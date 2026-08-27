@@ -1406,6 +1406,48 @@ def get_what_if_scenarios(entry_id: int) -> dict:
     return {"scenarios": scenarios, "reality": reality, "latest_gw": latest_history_gw}
 
 
+def get_prior_season_summary() -> dict[int, dict]:
+    """
+    Each player's most recent PAST season (not the current one) -
+    total points and an estimated points-per-game, using the same
+    "minutes / 90" appearance estimate used in get_all_player_profiles
+    (past seasons only record total minutes, not actual appearance
+    counts, so this is a rough guide, not exact). Keyed by player_id;
+    a player with no past-season history at all (this season is their
+    FPL debut) simply isn't in the returned dict - callers should
+    treat a missing key as "not available", not zero.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    rows = conn.execute(
+        """
+        SELECT h.player_id, h.season, h.total_points, h.minutes
+        FROM player_gw_history h
+        INNER JOIN (
+            SELECT player_id, MAX(season) AS latest_season
+            FROM player_gw_history
+            WHERE season != ? AND gameweek IS NULL
+            GROUP BY player_id
+        ) latest ON h.player_id = latest.player_id AND h.season = latest.latest_season
+        WHERE h.gameweek IS NULL
+        """,
+        (CURRENT_SEASON,),
+    ).fetchall()
+    conn.close()
+
+    summary = {}
+    for r in rows:
+        games_est = round(r["minutes"] / 90) if r["minutes"] else 0
+        ppg_est = round(r["total_points"] / games_est, 2) if games_est > 0 else None
+        summary[r["player_id"]] = {
+            "season": r["season"],
+            "total_points": r["total_points"],
+            "points_per_game_est": ppg_est,
+        }
+    return summary
+
+
 def get_top_value(position: int | None = None, min_minutes: int = 90, limit: int = 10) -> list[dict]:
     """Latest snapshot only, ranked by points-per-game per £1m spent."""
     conn = get_connection()

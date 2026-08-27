@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios, STATUS_LABELS
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios, get_prior_season_summary, STATUS_LABELS
 from config import TEAM_ID, MY_WATCHLIST, CLAUDE_CHAT_URL
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -390,8 +390,13 @@ def build_html() -> str:
     chip_advice = get_chip_suggestions(TEAM_ID)
     transfer_suggestions = get_transfer_suggestions(TEAM_ID)
 
+    prior_season_summary = get_prior_season_summary()
     for row in full_table:
         row["position"] = POSITION_NAMES.get(row["position"], "?")
+        prior = prior_season_summary.get(row["player_id"])
+        row["prior_season"] = prior["season"] if prior else None
+        row["prior_season_points"] = prior["total_points"] if prior else None
+        row["prior_season_ppg"] = prior["points_per_game_est"] if prior else None
     for row in squad:
         row["position"] = POSITION_NAMES.get(row["position"], "?")
 
@@ -564,6 +569,9 @@ def build_html() -> str:
                   padding: 5px 10px; font-size: 0.75rem; cursor: pointer; }}
   .toggle-btn.active {{ background: var(--clay); color: #fff; border-color: var(--clay); font-weight: 700; }}
 
+  .prior-col {{ display: none; }}
+  #fullTable.show-prior .prior-col {{ display: table-cell; }}
+
   .history-slider-row {{ display: flex; align-items: center; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; }}
   .history-slider-row input[type="range"] {{ flex: 1; min-width: 160px; accent-color: var(--clay); }}
   .history-label {{ white-space: nowrap; }}
@@ -702,6 +710,9 @@ def build_html() -> str:
         <button class="toggle-btn" data-position="MID">MID</button>
         <button class="toggle-btn" data-position="FWD">FWD</button>
       </div>
+      <div class="toggle-row">
+        <button class="toggle-btn" id="priorSeasonToggle">Show Last Season</button>
+      </div>
       <div class="scroll">
         <table id="fullTable">
           <thead>
@@ -713,11 +724,14 @@ def build_html() -> str:
               <th onclick="sortTable(4)">Form</th>
               <th onclick="sortTable(5)">PPG</th>
               <th onclick="sortTable(6)">Own%</th>
+              <th class="prior-col" onclick="sortTable(7)">Last Pts</th>
+              <th class="prior-col" onclick="sortTable(8)">Last PPG</th>
             </tr>
           </thead>
           <tbody id="tableBody"></tbody>
         </table>
       </div>
+      <p class="muted" style="font-size:0.75rem;margin-top:8px;">Last season figures are shown where available - a player's FPL debut season won't have one. PPG is estimated from minutes &divide; 90, same as the profile popup's past-season history.</p>
     </div>
   </div>
 
@@ -1140,10 +1154,12 @@ function renderTable(rows) {{
       <td>${{r.position}}</td><td>£${{r.price}}m</td>
       <td>${{r.total_points}}</td><td>${{r.form}}</td>
       <td>${{r.points_per_game}}</td><td>${{r.selected_by_percent}}%</td>
+      <td class="prior-col">${{r.prior_season_points !== null ? r.prior_season_points : '&mdash;'}}</td>
+      <td class="prior-col">${{r.prior_season_ppg !== null ? r.prior_season_ppg : '&mdash;'}}</td>
     </tr>`).join('');
 }}
 
-const keys = ['name','position','price','total_points','form','points_per_game','selected_by_percent'];
+const keys = ['name','position','price','total_points','form','points_per_game','selected_by_percent','prior_season_points','prior_season_ppg'];
 let sortDir = {{}};
 let sortKey = null;
 let positionFilter = 'All';
@@ -1174,6 +1190,14 @@ document.getElementById('positionFilter').querySelectorAll('.toggle-btn').forEac
 }});
 
 applyTableFilterAndSort();
+
+const priorSeasonToggle = document.getElementById('priorSeasonToggle');
+if (priorSeasonToggle) {{
+  priorSeasonToggle.addEventListener('click', () => {{
+    priorSeasonToggle.classList.toggle('active');
+    document.getElementById('fullTable').classList.toggle('show-prior');
+  }});
+}}
 
 function openProfile(playerId) {{
   const p = playerProfiles[playerId];
