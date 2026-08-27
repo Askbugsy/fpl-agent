@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios
-from config import TEAM_ID, MY_WATCHLIST
+from config import TEAM_ID, MY_WATCHLIST, CLAUDE_CHAT_URL
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -202,6 +202,85 @@ def render_transfer_suggestion(t: dict) -> str:
     </div>'''
 
 
+def build_weekly_briefing(
+    manager_stats: dict, captain_picks: list[dict], chip_advice: dict,
+    transfer_suggestions: list[dict], formation: dict, what_if: dict,
+    next_deadline: dict,
+) -> str:
+    """
+    Plain-text summary of the week, meant to be pasted straight into a
+    Claude conversation as an opening message - the "Discuss with
+    Claude" button copies this to the clipboard. Built entirely from
+    data the dashboard has already computed (no extra API calls, no
+    cost), so it can never say something different from what the page
+    itself shows.
+    """
+    lines = [f"Here's my FPL dashboard for Gameweek {manager_stats.get('gameweek', '?')} - talk me through it?", ""]
+
+    if manager_stats:
+        gw_points = manager_stats.get("gw_points")
+        if gw_points is not None:
+            gw_line = f"Last gameweek: {gw_points} pts"
+            if manager_stats.get("average_score") is not None:
+                gw_line += f" (league average {manager_stats['average_score']}, highest {manager_stats.get('highest_score', '?')})"
+            lines.append(gw_line + ".")
+        else:
+            lines.append(f"Gameweek {manager_stats.get('gameweek', '?')} hasn't been played yet.")
+        if manager_stats.get("overall_rank"):
+            lines.append(f"Overall rank: {manager_stats['overall_rank']:,}.")
+        if manager_stats.get("bank") is not None and manager_stats.get("team_value") is not None:
+            lines.append(f"Squad value £{manager_stats['team_value']}m, £{manager_stats['bank']}m in the bank.")
+        lines.append("")
+
+    if captain_picks:
+        top = captain_picks[0]
+        lines.append(f"Suggested captain: {top['name']} (form {top['form']}, projected score {top['score']}).")
+        lines.append("")
+
+    if chip_advice:
+        lines.append(f"Chip timing - Triple Captain/Bench Boost: {chip_advice['triple_captain_bench_boost']}")
+        lines.append(f"Chip timing - Free Hit: {chip_advice['free_hit']}")
+        lines.append("")
+
+    if transfer_suggestions:
+        lines.append("Players worth considering transferring out:")
+        for t in transfer_suggestions[:3]:
+            reasons = []
+            if t.get("injury_reason"):
+                reasons.append(t["injury_reason"])
+            if t["form_drop"]:
+                reasons.append(f"form -{t['form_drop']}")
+            if t["price_drop"]:
+                reasons.append(f"price -£{t['price_drop']}m")
+            reason_text = ", ".join(reasons)
+            candidate = t["candidates"][0]["name"] if t["candidates"] else "no clear replacement found"
+            lines.append(f"  - {t['name']} ({t['urgency']}): {reason_text}. Top replacement idea: {candidate}.")
+        lines.append("")
+
+    if formation.get("formation"):
+        lines.append(f"Recommended formation for upcoming fixtures: {formation['formation']} (projected {formation['projected_total']} pts).")
+        lines.append("")
+
+    scenarios = what_if.get("scenarios", [])
+    reality = what_if.get("reality", [])
+    if len(scenarios) >= 2 and reality:
+        reality_total = reality[-1]["cumulative"]
+        lines.append("What Could Have Been so far this season:")
+        lines.append(f"  - Actual: {reality_total} pts")
+        for s in scenarios:
+            diff = s["total_to_date"] - reality_total
+            sign = "+" if diff > 0 else ""
+            lines.append(f"  - GW{s['start_gw']} squad: {s['total_to_date']} pts ({sign}{diff} vs actual)")
+        lines.append("")
+
+    if next_deadline:
+        lines.append(f"Next deadline: Gameweek {next_deadline['gameweek']} - {next_deadline['deadline_time']}")
+        lines.append("")
+
+    lines.append("Given all this, what would you do before the deadline?")
+    return "\n".join(lines)
+
+
 def build_html() -> str:
     movers = get_movers(limit=10)
     movers_subtitle = (
@@ -234,6 +313,19 @@ def build_html() -> str:
     profiles = get_all_player_profiles()
     formation = get_optimal_formation(TEAM_ID)
     manager_stats = get_manager_stats(TEAM_ID)
+
+    # manager_stats' numeric fields are None (not missing) for a
+    # gameweek still pending - plain dict.get(key, '-') only falls
+    # back to '-' when a key is absent, so it would otherwise print
+    # the literal text "None" once a gameweek's points/value legitimately
+    # have no value yet. gw_points can genuinely be 0, so this checks
+    # "is not None" rather than truthiness.
+    gw_points_display = manager_stats.get("gw_points") if manager_stats.get("gw_points") is not None else "-"
+    average_score_display = manager_stats.get("average_score") if manager_stats.get("average_score") is not None else "-"
+    highest_score_display = manager_stats.get("highest_score") if manager_stats.get("highest_score") is not None else "-"
+    team_value_display = f"£{manager_stats['team_value']}m" if manager_stats.get("team_value") is not None else "-"
+    bank_display = f"£{manager_stats['bank']}m" if manager_stats.get("bank") is not None else "-"
+
     next_deadline = get_next_deadline()
     watchlist = get_watchlist(MY_WATCHLIST)
     squad_history = get_squad_history(TEAM_ID)
@@ -250,6 +342,11 @@ def build_html() -> str:
 
     formations_by_label = {c["formation"]: c for c in formation.get("all_formations", [])}
 
+    weekly_briefing = build_weekly_briefing(
+        manager_stats, captain_picks, chip_advice, transfer_suggestions,
+        formation, what_if, next_deadline,
+    )
+
     movers_json = json.dumps(movers)
     value_json = json.dumps(value_picks)
     table_json = json.dumps(full_table)
@@ -257,6 +354,8 @@ def build_html() -> str:
     squad_json = json.dumps(squad)
     squad_history_json = json.dumps(squad_history)
     what_if_json = json.dumps(what_if)
+    weekly_briefing_json = json.dumps(weekly_briefing)
+    claude_chat_url_json = json.dumps(CLAUDE_CHAT_URL)
     formations_json = json.dumps(formations_by_label)
     best_formation_json = json.dumps(formation.get("formation"))
     photo_base_json = json.dumps(PLAYER_PHOTO_BASE)
@@ -414,16 +513,23 @@ def build_html() -> str:
 
   <div class="tab-panel active" id="tab-squad">
     <div class="card">
+      <h2>Discuss with Claude</h2>
+      <p class="subtitle" style="margin-bottom:10px;">Copies this week's briefing &mdash; your stats, captain pick, transfer suggestions, chip timing &mdash; to your clipboard and opens a chat to paste it into.</p>
+      <button class="toggle-btn active" id="discussClaudeBtn" style="padding:8px 16px;">Discuss with Claude</button>
+      <div id="discussStatus" class="subtitle" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="card">
       <h2>Manager Stats &mdash; Gameweek {manager_stats.get('gameweek', '?')}</h2>
       {"<p>No manager data yet.</p>" if not manager_stats else f'''
       <div class="modal-stats">
-        <div><span>Your points</span><span><strong>{manager_stats.get('gw_points', '-')}</strong></span></div>
-        <div><span>League average</span><span>{manager_stats.get('average_score', '-')}</span></div>
-        <div><span>League highest</span><span>{manager_stats.get('highest_score', '-')}</span></div>
+        <div><span>Your points</span><span><strong>{gw_points_display}</strong></span></div>
+        <div><span>League average</span><span>{average_score_display}</span></div>
+        <div><span>League highest</span><span>{highest_score_display}</span></div>
         <div><span>GW rank</span><span>{f"{manager_stats['gw_rank']:,}" if manager_stats.get('gw_rank') else '-'}</span></div>
         <div><span>Overall rank</span><span>{f"{manager_stats['overall_rank']:,}" if manager_stats.get('overall_rank') else '-'}</span></div>
-        <div><span>Squad value</span><span>£{manager_stats.get('team_value', '-')}m</span></div>
-        <div><span>Bank</span><span>£{manager_stats.get('bank', '-')}m</span></div>
+        <div><span>Squad value</span><span>{team_value_display}</span></div>
+        <div><span>Bank</span><span>{bank_display}</span></div>
       </div>
       '''}
     </div>
@@ -566,6 +672,8 @@ const playerProfiles = {profiles_json};
 const squadData = {squad_json};
 const squadHistory = {squad_history_json};
 const whatIf = {what_if_json};
+const weeklyBriefing = {weekly_briefing_json};
+const claudeChatUrl = {claude_chat_url_json};
 const allFormations = {formations_json};
 const bestFormationLabel = {best_formation_json};
 const PLAYER_PHOTO_BASE = {photo_base_json};
@@ -589,6 +697,23 @@ document.getElementById('tabBar').addEventListener('click', (e) => {{
   e.target.classList.add('active');
   document.getElementById('tab-' + e.target.dataset.tab).classList.add('active');
 }});
+
+const discussClaudeBtn = document.getElementById('discussClaudeBtn');
+if (discussClaudeBtn) {{
+  discussClaudeBtn.addEventListener('click', async () => {{
+    const statusEl = document.getElementById('discussStatus');
+    try {{
+      await navigator.clipboard.writeText(weeklyBriefing);
+      if (statusEl) statusEl.textContent = 'Copied! Paste it into the chat that just opened.';
+    }} catch (e) {{
+      // Clipboard API can fail (no HTTPS, permissions denied, etc.) -
+      // fall back to a manual copy so the button still does something.
+      prompt('Copy this, then paste it into the chat that just opened:', weeklyBriefing);
+      if (statusEl) statusEl.textContent = '';
+    }}
+    window.open(claudeChatUrl || 'https://claude.ai/new', '_blank', 'noopener');
+  }});
+}}
 
 function statusDotHTML(status, news) {{
   if (status === 'i' || status === 's' || status === 'u' || status === 'n') {{
