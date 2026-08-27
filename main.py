@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_element_summary, get_entry_picks, get_entry_summary, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, save_player_gw_history, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_squad_alltime_player_ids
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, save_player_gw_history, clear_pending_gw_points, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_squad_alltime_player_ids
 from config import TEAM_ID, MY_WATCHLIST
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -86,6 +86,13 @@ def main():
             # own login, which FPL's identity provider doesn't allow a
             # script to do on your behalf.
             print(f"Could not fetch squad for GW{current_gw}: {e}\n")
+
+            # If an earlier run already saved a squad for this still-pending
+            # gameweek, any gw_points sitting there are stale/mislabeled -
+            # not real GW{current_gw} results, since the gameweek hasn't
+            # been played. Blank them out rather than let the dashboard
+            # show a fabricated total until the real fetch above succeeds.
+            clear_pending_gw_points(TEAM_ID, current_gw)
 
     # Keeps the "What Could Have Been" trajectories current: only the
     # players who've ever actually been in your squad (a season's worth
