@@ -11,6 +11,9 @@ Docs aren't official, but the community has reverse-engineered this
 well: https://github.com/vaastav/Fantasy-Premier-League/wiki
 """
 
+import os
+import subprocess
+
 import requests
 
 BASE_URL = "https://fantasy.premierleague.com/api"
@@ -112,22 +115,34 @@ def get_entry_summary(entry_id: int) -> dict:
 # is set (meant to come from a GitHub Actions secret, never committed
 # to the repo). The token is held in memory only for the duration of
 # the exchange call - never logged, never written to disk or the
-# database. Note some OIDC providers rotate the refresh token on every
-# use, in which case a stored token only keeps working for one run and
-# has to be re-extracted periodically - main.py doesn't currently have
-# a way to write a rotated token back to the GitHub secret.
+# database.
+#
+# Confirmed live: PingOne rotates the refresh token on every exchange
+# and invalidates the old one - a token that worked fine on one run
+# got a 400 Bad Request on the very next. refresh_access_token() below
+# returns any newly-issued refresh token alongside the access token,
+# and rotate_refresh_token_secret() persists it back to the GitHub
+# secret via the gh CLI, so a stored token keeps working indefinitely
+# instead of needing manual re-extraction after every single use.
 
 FPL_OIDC_AUTHORITY = "https://account.premierleague.com/as"
 FPL_OIDC_CLIENT_ID = "bfcbaf69-aade-4c1b-8f00-c1cb8a193030"
 
 
-def refresh_access_token(refresh_token: str) -> str:
+def refresh_access_token(refresh_token: str) -> tuple[str, str | None]:
     """
     Exchanges a refresh token for a fresh access token via FPL's OIDC
     provider, using standard OAuth2 discovery (fetching the provider's
     own .well-known/openid-configuration for its token endpoint,
     rather than a hardcoded URL that could go stale) plus the standard
-    refresh_token grant. Returns just the access token string.
+    refresh_token grant.
+
+    Returns (access_token, rotated_refresh_token) - the second element
+    is None unless the provider issued a genuinely new refresh token in
+    this same response (some do this on every exchange, invalidating
+    the one that was just used). Callers should persist a non-None
+    rotated_refresh_token, or the next run will fail with the same
+    now-dead token.
     """
     discovery = requests.get(f"{FPL_OIDC_AUTHORITY}/.well-known/openid-configuration", timeout=10)
     discovery.raise_for_status()
@@ -143,7 +158,55 @@ def refresh_access_token(refresh_token: str) -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    data = resp.json()
+
+    new_refresh_token = data.get("refresh_token")
+    rotated = new_refresh_token if new_refresh_token and new_refresh_token != refresh_token else None
+    return data["access_token"], rotated
+
+
+def rotate_refresh_token_secret(new_refresh_token: str) -> None:
+    """
+    Persists a rotated refresh token back to this repo's
+    FPL_REFRESH_TOKEN GitHub Actions secret, via the gh CLI (already
+    installed on GitHub-hosted runners) - so the next run doesn't fail
+    with the old, now-invalidated token.
+
+    Needs GH_SECRETS_PAT: a fine-grained personal access token scoped
+    to just this one repo, with only its "Secrets" permission set to
+    read/write - stored as its own GitHub secret, separate from
+    FPL_REFRESH_TOKEN. Silently does nothing outside of GitHub Actions
+    or without that token set - this is a nice-to-have that should
+    never break the actual data pull if it fails.
+
+    The new token is piped in via stdin, never passed as a CLI argument
+    or interpolated into workflow YAML, so it's never written to the
+    process list or a step's logged command line. Failures are caught
+    and reported, never raised - the run this token was fetched for has
+    already succeeded regardless of whether saving it for next time
+    works.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    pat = os.environ.get("GH_SECRETS_PAT")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if not pat or not repo:
+        print("GH_SECRETS_PAT not set - can't persist the rotated refresh token; "
+              "the next run will need a fresh one extracted manually.")
+        return
+
+    try:
+        subprocess.run(
+            ["gh", "secret", "set", "FPL_REFRESH_TOKEN", "--repo", repo],
+            input=new_refresh_token,
+            text=True,
+            check=True,
+            env={**os.environ, "GH_TOKEN": pat},
+            capture_output=True,
+        )
+        print("Rotated FPL_REFRESH_TOKEN saved for next time.")
+    except Exception as e:
+        print(f"Could not save the rotated refresh token: {e}")
 
 
 def get_my_team(access_token: str, entry_id: int) -> dict:
