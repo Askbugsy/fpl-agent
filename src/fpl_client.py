@@ -88,3 +88,66 @@ def get_entry_summary(entry_id: int) -> dict:
     resp = requests.get(f"{BASE_URL}/entry/{entry_id}/", timeout=10)
     resp.raise_for_status()
     return resp.json()
+
+
+# --- Authenticated access (optional) -----------------------------------
+#
+# Everything above is public - no login needed. But get_entry_picks()
+# for a gameweek whose deadline hasn't passed yet returns a 404: FPL
+# doesn't expose a manager's pending picks publicly (so rivals can't
+# scout your team before deadline). The only way to see YOUR OWN
+# pending squad - the one you can still edit - is the authenticated
+# "my-team" endpoint below, which needs a real login.
+#
+# main.py only uses this as a fallback, and only if FPL_EMAIL/
+# FPL_PASSWORD are set (meant to come from GitHub Actions secrets,
+# never committed to the repo). Credentials are held in memory only
+# for the duration of one login call - never logged, never written
+# to disk or the database.
+
+FPL_LOGIN_URL = "https://users.premierleague.com/accounts/login/"
+
+
+def get_authenticated_session(email: str, password: str) -> requests.Session:
+    """
+    Logs into the real FPL site - the same login your browser uses -
+    and returns a requests.Session carrying the resulting cookies.
+    Needed only for get_my_team() below.
+
+    FPL's login form returns HTTP 200 even on a wrong password (it's
+    a normal form post, not an API), so success isn't judged by
+    status code - it's judged by whether a session cookie actually
+    came back.
+    """
+    session = requests.Session()
+    session.post(
+        FPL_LOGIN_URL,
+        data={
+            "login": email,
+            "password": password,
+            "app": "plfpl-web",
+            "redirect_uri": "https://fantasy.premierleague.com/",
+        },
+        timeout=10,
+    )
+    if "sessionid" not in session.cookies.get_dict():
+        raise RuntimeError(
+            "FPL login did not return a session cookie - check that FPL_EMAIL/FPL_PASSWORD are correct."
+        )
+    return session
+
+
+def get_my_team(session: requests.Session, entry_id: int) -> dict:
+    """
+    Returns your own current saved picks, chips, and transfer/bank
+    state - including for a gameweek whose deadline hasn't passed
+    yet, unlike the public picks endpoint. Requires an authenticated
+    session from get_authenticated_session().
+
+    Shape matches get_entry_picks()'s 'picks' list closely enough to
+    be saved the same way, but has no 'entry_history' block - points
+    and rank for a gameweek that hasn't been scored yet don't exist.
+    """
+    resp = session.get(f"{BASE_URL}/my-team/{entry_id}/", timeout=10)
+    resp.raise_for_status()
+    return resp.json()
