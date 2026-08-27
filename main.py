@@ -63,6 +63,14 @@ def main():
     if current_gw:
         print(f"Fetching your squad (Team ID {TEAM_ID}) for Gameweek {current_gw}...")
         picks_data = None
+        # True only when the public endpoint failed and we had to fall back
+        # to the authenticated one - which only ever happens when this
+        # gameweek's deadline hasn't passed yet, i.e. it has no real points
+        # yet at all. bootstrap-static's event_points at that moment still
+        # reflects whichever gameweek was last actually played, so treating
+        # it as "this gameweek's points" would mislabel last week's scores -
+        # including for players since transferred out - as this week's.
+        pending_gameweek = False
         try:
             picks_data = get_entry_picks(TEAM_ID, current_gw)
         except Exception as e:
@@ -79,6 +87,7 @@ def main():
                     print("Trying an authenticated fetch for your pending picks instead...")
                     access_token = refresh_access_token(refresh_token)
                     picks_data = get_my_team(access_token, TEAM_ID)
+                    pending_gameweek = True
                     print("Fetched your pending picks via authenticated session.")
                 except Exception as auth_e:
                     print(f"Authenticated fetch also failed: {auth_e}")
@@ -88,7 +97,7 @@ def main():
 
         if picks_data:
             try:
-                player_points = {p["id"]: p["event_points"] for p in players}
+                player_points = {} if pending_gameweek else {p["id"]: p["event_points"] for p in players}
                 save_squad_picks(TEAM_ID, current_gw, picks_data, player_points)
 
                 live_summary = None
@@ -99,12 +108,14 @@ def main():
                     # at whenever that gameweek was scored rather than live.
                     print(f"Could not fetch live rank: {e}\n")
 
-                # picks_data.get("entry_history", {}) is deliberately here, not
-                # a KeyError guard: the authenticated my-team endpoint has no
-                # entry_history block at all (points/rank for a gameweek that
-                # hasn't been scored yet don't exist), so this just saves bank/
-                # value with points/rank left blank until it's actually played.
-                save_entry_summary(TEAM_ID, current_gw, picks_data.get("entry_history", {}), live_summary)
+                # The authenticated my-team endpoint has no entry_history
+                # block at all (points/rank for a gameweek that hasn't been
+                # scored yet don't exist) - but it does carry bank/squad
+                # value under 'transfers', with the same field names, so
+                # Manager Stats doesn't show a bogus £0.0m for a pending
+                # gameweek while its points/rank are correctly left blank.
+                entry_history = picks_data.get("entry_history") or picks_data.get("transfers", {})
+                save_entry_summary(TEAM_ID, current_gw, entry_history, live_summary)
                 print("Squad saved.\n")
             except Exception as e:
                 print(f"Could not save squad picks: {e}\n")
