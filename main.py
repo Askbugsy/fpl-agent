@@ -15,12 +15,13 @@ To also (re)build the visual dashboard from this data, run:
 """
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from fpl_client import get_bootstrap_static, get_entry_picks, get_entry_summary, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist
+from fpl_client import get_bootstrap_static, get_element_summary, get_entry_picks, get_entry_summary, get_fixtures
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_gameweek_summary, save_player_gw_history, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_squad_alltime_player_ids
 from config import TEAM_ID, MY_WATCHLIST
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -85,6 +86,25 @@ def main():
             # own login, which FPL's identity provider doesn't allow a
             # script to do on your behalf.
             print(f"Could not fetch squad for GW{current_gw}: {e}\n")
+
+    # Keeps the "What Could Have Been" trajectories current: only the
+    # players who've ever actually been in your squad (a season's worth
+    # of transfers - a few dozen players at most), not a full ~700-player
+    # backfill sweep. One element-summary call per player, lightly paced;
+    # failures here never break the rest of the run.
+    try:
+        alltime_ids = get_squad_alltime_player_ids(TEAM_ID)
+        if alltime_ids:
+            print(f"Refreshing gameweek history for {len(alltime_ids)} squad player(s)...")
+            for player_id in alltime_ids:
+                try:
+                    save_player_gw_history(player_id, get_element_summary(player_id))
+                except Exception as e:
+                    print(f"  Could not refresh history for player {player_id}: {e}")
+                time.sleep(0.2)
+            print("Done.\n")
+    except Exception as e:
+        print(f"Could not refresh squad player history: {e}\n")
 
     movers = get_movers(limit=5)
     if movers:

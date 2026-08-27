@@ -1182,6 +1182,187 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
     return watchlist
 
 
+def save_player_gw_history(player_id: int, summary: dict) -> None:
+    """
+    Saves one player's full history from the element-summary API
+    response: this season's results gameweek by gameweek, plus
+    past-season summaries. Shared by backfill_history.py (all ~700
+    players, run occasionally) and main.py's lighter per-run refresh
+    (just the handful of players who've ever been in your squad),
+    which keeps get_what_if_scenarios's trajectories current without
+    paying for a full backfill on every single run.
+    """
+    conn = get_connection()
+
+    gw_rows = [
+        (
+            player_id, CURRENT_SEASON, gw["round"], gw["total_points"],
+            gw["minutes"], gw["goals_scored"], gw["assists"],
+            gw["value"] / 10,
+        )
+        for gw in summary.get("history", [])
+    ]
+    past_rows = [
+        (
+            player_id, season["season_name"], None, season["total_points"],
+            season["minutes"], season["goals_scored"], season["assists"],
+            None,  # no single price for a whole past season
+        )
+        for season in summary.get("history_past", [])
+    ]
+
+    conn.executemany(
+        """INSERT OR REPLACE INTO player_gw_history
+           (player_id, season, gameweek, total_points, minutes,
+            goals_scored, assists, price)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        gw_rows + past_rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_squad_alltime_player_ids(entry_id: int) -> list[int]:
+    """
+    Every player who has ever appeared in this entry's squad_picks,
+    across all recorded gameweeks - the small pool (a season's worth
+    of transfers, typically a few dozen players at most) that
+    get_what_if_scenarios needs fresh per-gameweek history for, without
+    paying for backfill_history.py's full ~700-player sweep on every
+    weekly run.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT DISTINCT player_id FROM squad_picks WHERE entry_id = ?", (entry_id,)
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def get_what_if_scenarios(entry_id: int) -> dict:
+    """
+    For every distinct squad you've held this season - a new one starts
+    each time the 15-man player set actually changes via a transfer;
+    captain or formation tweaks within the same 15 don't count -
+    simulates "what if I'd never touched this squad again": freezes
+    that gameweek's starting XI, bench, and captain choice exactly as
+    picked, then carries it forward using each player's REAL points
+    every following gameweek (from player_gw_history, independent of
+    whether you actually owned them that week), so each past version
+    of your team can be compared against what actually happened.
+
+    Simplifications, deliberately: captain/formation/bench stay frozen
+    at how they were picked on the scenario's starting gameweek (no
+    hypothetical re-captaining or auto-subs week to week), and the
+    Bench Boost chip isn't modelled - only the frozen starting XI's
+    points count each week, same as normal scoring.
+
+    A scenario whose starting gameweek hasn't been played yet (no real
+    per-gameweek data exists for it) is left out entirely rather than
+    shown with an empty trajectory - it'll appear on its own once that
+    gameweek is actually scored.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    latest_history_gw = conn.execute(
+        "SELECT MAX(gameweek) AS gw FROM player_gw_history WHERE season = ? AND gameweek IS NOT NULL",
+        (CURRENT_SEASON,),
+    ).fetchone()["gw"]
+    if latest_history_gw is None:
+        conn.close()
+        return {"scenarios": [], "reality": [], "latest_gw": None}
+
+    squad_gws = [
+        r["gameweek"] for r in conn.execute(
+            "SELECT DISTINCT gameweek FROM squad_picks WHERE entry_id = ? ORDER BY gameweek",
+            (entry_id,),
+        ).fetchall()
+    ]
+    if not squad_gws:
+        conn.close()
+        return {"scenarios": [], "reality": [], "latest_gw": latest_history_gw}
+
+    latest_snapshot_date = conn.execute(
+        "SELECT MAX(snapshot_date) AS d FROM player_snapshots"
+    ).fetchone()["d"]
+
+    def load_squad(gw: int) -> list[dict]:
+        rows = conn.execute(
+            """SELECT sp.player_id, sp.squad_position, sp.multiplier,
+                      ps.name, ps.position, ps.photo_code
+               FROM squad_picks sp
+               JOIN player_snapshots ps ON sp.player_id = ps.player_id AND ps.snapshot_date = ?
+               WHERE sp.entry_id = ? AND sp.gameweek = ?
+               ORDER BY sp.squad_position""",
+            (latest_snapshot_date, entry_id, gw),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # Epoch = a genuinely different 15-man squad. Comparing player_id sets
+    # only (not multiplier) means a formation/captain change alone - with
+    # no transfer - doesn't start a new scenario.
+    epochs = []
+    prev_ids = None
+    for gw in squad_gws:
+        rows = load_squad(gw)
+        ids = frozenset(r["player_id"] for r in rows)
+        if ids != prev_ids:
+            epochs.append((gw, rows))
+        prev_ids = ids
+
+    all_player_ids = {r["player_id"] for _, rows in epochs for r in rows}
+    points_lookup: dict[tuple[int, int], int] = {}
+    if all_player_ids:
+        placeholders = ",".join("?" * len(all_player_ids))
+        for row in conn.execute(
+            f"""SELECT player_id, gameweek, total_points FROM player_gw_history
+                WHERE season = ? AND gameweek IS NOT NULL AND player_id IN ({placeholders})""",
+            [CURRENT_SEASON] + list(all_player_ids),
+        ).fetchall():
+            points_lookup[(row["player_id"], row["gameweek"])] = row["total_points"]
+
+    scenarios = []
+    for start_gw, rows in epochs:
+        if start_gw > latest_history_gw:
+            continue  # this squad's first gameweek hasn't been played yet
+        starters = [r for r in rows if r["multiplier"] > 0]
+        trajectory = []
+        cumulative = 0
+        for gw in range(start_gw, latest_history_gw + 1):
+            gw_points = sum(
+                points_lookup.get((r["player_id"], gw), 0) * r["multiplier"]
+                for r in starters
+            )
+            cumulative += gw_points
+            trajectory.append({"gameweek": gw, "points": gw_points, "cumulative": cumulative})
+        scenarios.append({
+            "start_gw": start_gw,
+            "squad": [
+                {"player_id": r["player_id"], "name": r["name"], "position": r["position"],
+                 "photo_code": r["photo_code"], "multiplier": r["multiplier"]}
+                for r in starters
+            ],
+            "trajectory": trajectory,
+            "total_to_date": cumulative,
+        })
+
+    reality_rows = conn.execute(
+        """SELECT gameweek, gw_points FROM entry_summary
+           WHERE entry_id = ? AND gameweek <= ? AND gw_points IS NOT NULL
+           ORDER BY gameweek""",
+        (entry_id, latest_history_gw),
+    ).fetchall()
+    reality = []
+    cumulative = 0
+    for r in reality_rows:
+        cumulative += r["gw_points"]
+        reality.append({"gameweek": r["gameweek"], "points": r["gw_points"], "cumulative": cumulative})
+
+    conn.close()
+    return {"scenarios": scenarios, "reality": reality, "latest_gw": latest_history_gw}
+
+
 def get_top_value(position: int | None = None, min_minutes: int = 90, limit: int = 10) -> list[dict]:
     """Latest snapshot only, ranked by points-per-game per £1m spent."""
     conn = get_connection()
