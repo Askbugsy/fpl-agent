@@ -1143,11 +1143,20 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
     elsewhere), plus your own manual pick per position, resolved by
     name from manual_picks (e.g. {"GK": "Raya", ...}).
 
-    Each pick also carries its form/price change vs a previous
-    snapshot, same as the movers/shakers trend logic - so you're not
-    just seeing a single week's number, you're watching how that
-    specific player is trending over time, exactly the point of a
-    watchlist rather than a one-off snapshot.
+    A watchlist exists to answer "should I actually bring this player
+    in", so each pick carries everything that decision needs, not just
+    price movement:
+      - form_change / price_change vs a previous snapshot (as before),
+        so you're watching a trend, not a single week's number.
+      - total_points and selected_by_percent - is this a proven
+        performer, and how heavily owned/differential is it.
+      - status / status_label / chance_of_playing / news - a doubtful
+        or injured watchlist player is exactly the one thing worth
+        flagging loudly, same status data used everywhere else on the
+        dashboard (transfer suggestions, the squad pitch).
+      - opponent / difficulty - their next fixture and FPL's own FDR,
+        same lookup used for captain suggestions and the squad pitch,
+        so you can see at a glance whether now is a good time to buy.
 
     Price and form use different baselines, since they move on
     different clocks: price shifts day to day with transfer-market
@@ -1174,8 +1183,13 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
     previous_date = dates[1]["snapshot_date"] if len(dates) > 1 else None
     form_baseline_date = _form_baseline_date(conn, latest_date)
 
-    def with_trend(row: dict) -> dict:
-        """Adds form_change (gameweek-aware baseline) and price_change (previous snapshot), if available."""
+    def enrich_pick(row: dict) -> dict:
+        """
+        Adds form_change/price_change (trend), status_label (from the
+        shared STATUS_LABELS map), and the player's next fixture +
+        FDR (same lookup pattern used by get_latest_squad and
+        get_captain_suggestions).
+        """
         row = dict(row)
         row["form_change"], row["price_change"] = None, None
         if previous_date:
@@ -1192,13 +1206,34 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
             ).fetchone()
             if prev_form:
                 row["form_change"] = round(row["form"] - prev_form["form"], 1)
+
+        row["status_label"] = STATUS_LABELS.get(row["status"], "Available")
+
+        fixture = conn.execute(
+            """SELECT team_h, team_a, team_h_difficulty, team_a_difficulty
+               FROM fixtures WHERE (team_h = ? OR team_a = ?) AND finished = 0
+               ORDER BY gameweek ASC LIMIT 1""",
+            (row["team"], row["team"]),
+        ).fetchone()
+        if fixture:
+            is_home = fixture["team_h"] == row["team"]
+            row["difficulty"] = fixture["team_h_difficulty"] if is_home else fixture["team_a_difficulty"]
+            opp_id = fixture["team_a"] if is_home else fixture["team_h"]
+            opp = conn.execute("SELECT short_name FROM teams WHERE team_id = ?", (opp_id,)).fetchone()
+            row["opponent"] = f"{opp['short_name']} ({'H' if is_home else 'A'})" if opp else None
+        else:
+            row["difficulty"], row["opponent"] = None, None
         return row
+
+    pick_columns = (
+        "player_id, name, team, price, total_points, points_per_game, form, "
+        "selected_by_percent, photo_code, status, chance_of_playing, news"
+    )
 
     watchlist = {}
     for label, pos_code in POSITION_CODES.items():
         data_driven = conn.execute(
-            """SELECT player_id, name, price, points_per_game, form, photo_code,
-                      ROUND(points_per_game / price, 3) AS value_score
+            f"""SELECT {pick_columns}, ROUND(points_per_game / price, 3) AS value_score
                FROM player_snapshots
                WHERE snapshot_date = ? AND position = ? AND minutes >= ?
                ORDER BY value_score DESC LIMIT 1""",
@@ -1209,15 +1244,15 @@ def get_watchlist(manual_picks: dict, min_minutes: int = 60) -> dict:
         manual_pick = None
         if manual_name:
             manual_row = conn.execute(
-                """SELECT player_id, name, price, points_per_game, form, photo_code
+                f"""SELECT {pick_columns}
                    FROM player_snapshots
                    WHERE snapshot_date = ? AND position = ? AND LOWER(name) = LOWER(?)""",
                 (latest_date, pos_code, manual_name),
             ).fetchone()
-            manual_pick = with_trend(manual_row) if manual_row else {"found": False, "name": manual_name}
+            manual_pick = enrich_pick(manual_row) if manual_row else {"found": False, "name": manual_name}
 
         watchlist[label] = {
-            "data_driven": with_trend(data_driven) if data_driven else None,
+            "data_driven": enrich_pick(data_driven) if data_driven else None,
             "manual": manual_pick,
         }
 
