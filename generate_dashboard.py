@@ -410,7 +410,6 @@ def build_html() -> str:
     <button class="tab-btn" data-tab="moves">Moves</button>
     <button class="tab-btn" data-tab="explore">Explore</button>
     <button class="tab-btn" data-tab="history">History</button>
-    <button class="tab-btn" data-tab="whatif">What If</button>
   </div>
 
   <div class="tab-panel active" id="tab-squad">
@@ -541,9 +540,7 @@ def build_html() -> str:
       <div id="historyTransfers"></div>
       '''}
     </div>
-  </div>
 
-  <div class="tab-panel" id="tab-whatif">
     <div class="card">
       <h2>What Could Have Been <span class="subtitle">(each squad you've held, tracked forward as if never touched again)</span></h2>
       {"<p>Not enough gameweeks played yet to compare &mdash; this fills in once a couple of gameweeks are on the books.</p>" if not what_if_ready else '''
