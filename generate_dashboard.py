@@ -737,6 +737,7 @@ def build_html() -> str:
       <div class="toggle-row" id="squadToggle">
         <button class="toggle-btn active" data-metric="points">Points</button>
         <button class="toggle-btn" data-metric="opponent">Opponent</button>
+        <button class="toggle-btn" data-metric="day">Day</button>
         <button class="toggle-btn" data-metric="price">Price</button>
         <button class="toggle-btn" data-metric="selling_price">Selling</button>
         <button class="toggle-btn" data-metric="difficulty">FDR</button>
@@ -999,6 +1000,14 @@ function pitchPoints(r) {{
 const SQUAD_METRICS = {{
   points: {{ label: 'Pts', value: pitchPoints }},
   opponent: {{ label: 'Opp', value: r => r.opponent || '-' }},
+  day: {{ label: 'Day', value: r => {{
+    if (!r.kickoff_time) return '-';
+    const d = new Date(r.kickoff_time);
+    if (isNaN(d)) return '-';
+    const day = d.toLocaleDateString(undefined, {{ weekday: 'short' }});
+    const time = d.toLocaleTimeString(undefined, {{ hour: '2-digit', minute: '2-digit' }});
+    return `${{day}} ${{time}}`;
+  }} }},
   price: {{ label: 'Price', value: r => `£${{r.price}}m` }},
   selling_price: {{ label: 'Selling', value: r => r.selling_price != null ? `£${{r.selling_price}}m` : '-' }},
   difficulty: {{ label: 'FDR', value: r => r.difficulty != null ? r.difficulty : '-' }},
