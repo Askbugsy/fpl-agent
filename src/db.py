@@ -513,7 +513,7 @@ def get_latest_squad(entry_id: int) -> list[dict]:
     Returns the most recent gameweek's squad for this entry, with
     every stat needed for the FPL-style pitch-view toggle (Opponent,
     Points, Price, Selling Price, FDR, Form, Ownership, Price
-    Change) - one call, all fields, so the dashboard can embed it
+    Change, Day) - one call, all fields, so the dashboard can embed it
     once and let the person switch views client-side without extra
     queries.
     """
@@ -552,9 +552,13 @@ def get_latest_squad(entry_id: int) -> list[dict]:
     for r in rows:
         row = dict(r)
 
-        # Next fixture: opponent + FDR (same lookup pattern as captain suggestions)
+        # Next fixture: opponent + FDR + kickoff time (same lookup pattern as
+        # captain suggestions). kickoff_time is FPL's raw UTC ISO timestamp -
+        # left unconverted here and formatted client-side (same as the
+        # deadline countdown), since only the browser actually knows the
+        # viewer's local timezone.
         fixture = conn.execute(
-            """SELECT team_h, team_a, team_h_difficulty, team_a_difficulty
+            """SELECT team_h, team_a, team_h_difficulty, team_a_difficulty, kickoff_time
                FROM fixtures WHERE (team_h = ? OR team_a = ?) AND finished = 0
                ORDER BY gameweek ASC LIMIT 1""",
             (row["team"], row["team"]),
@@ -565,8 +569,9 @@ def get_latest_squad(entry_id: int) -> list[dict]:
             opp_id = fixture["team_a"] if is_home else fixture["team_h"]
             opp = conn.execute("SELECT short_name FROM teams WHERE team_id = ?", (opp_id,)).fetchone()
             row["opponent"] = f"{opp['short_name']} ({'H' if is_home else 'A'})" if opp else None
+            row["kickoff_time"] = fixture["kickoff_time"]
         else:
-            row["difficulty"], row["opponent"] = None, None
+            row["difficulty"], row["opponent"], row["kickoff_time"] = None, None, None
 
         # Price change vs the previous snapshot
         row["price_change"] = None
