@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS player_snapshots (
     status TEXT,                    -- 'a'=available 'd'=doubtful 'i'=injured 's'=suspended 'u'/'n'=unavailable
     chance_of_playing INTEGER,      -- 0-100, FPL's own estimate for the next match
     news TEXT,                      -- free-text injury/news note, written by FPL's editorial team
+    goals_scored INTEGER,           -- cumulative season total (not per-gameweek - diff snapshots for that)
     PRIMARY KEY (player_id, snapshot_date)
 );
 
@@ -146,6 +147,7 @@ def get_connection() -> sqlite3.Connection:
         "ALTER TABLE player_snapshots ADD COLUMN news TEXT",
         "ALTER TABLE gameweek_summary ADD COLUMN deadline_time TEXT",
         "ALTER TABLE entry_summary ADD COLUMN total_points INTEGER",
+        "ALTER TABLE player_snapshots ADD COLUMN goals_scored INTEGER",
     ):
         try:
             conn.execute(stmt)
@@ -169,6 +171,7 @@ def save_snapshot(players: list[dict]) -> str:
             float(p["points_per_game"]), p["minutes"], float(p["selected_by_percent"]),
             p["code"], f"{p['first_name']} {p['second_name']}".strip(),
             p.get("status"), p.get("chance_of_playing_next_round"), p.get("news") or None,
+            p.get("goals_scored"),
         )
         for p in players
     ]
@@ -177,8 +180,8 @@ def save_snapshot(players: list[dict]) -> str:
         """INSERT OR REPLACE INTO player_snapshots
            (player_id, snapshot_date, name, team, position, price,
             total_points, form, points_per_game, minutes, selected_by_percent,
-            photo_code, full_name, status, chance_of_playing, news)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            photo_code, full_name, status, chance_of_playing, news, goals_scored)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -1305,6 +1308,10 @@ def get_watchlist(entry_id: int, manual_picks: dict, min_minutes: int = 60) -> d
         so you're watching a trend, not a single week's number.
       - total_points and selected_by_percent - is this a proven
         performer, and how heavily owned/differential is it.
+      - goals_this_week - goals scored in the most recently completed
+        gameweek specifically (diffed against the season-cumulative
+        goals_scored figure, same gameweek-aware baseline as
+        form_change), not the season total already covered above.
       - status / status_label / chance_of_playing / news - a doubtful
         or injured watchlist player is exactly the one thing worth
         flagging loudly, same status data used everywhere else on the
@@ -1413,10 +1420,10 @@ def get_watchlist(entry_id: int, manual_picks: dict, min_minutes: int = 60) -> d
 
     def enrich_pick(row: dict) -> dict:
         """
-        Adds form_change/price_change (trend), status_label (from the
-        shared STATUS_LABELS map), and the player's next fixture +
-        FDR (same lookup pattern used by get_latest_squad and
-        get_captain_suggestions).
+        Adds form_change/price_change (trend), goals_this_week,
+        status_label (from the shared STATUS_LABELS map), and the
+        player's next fixture + FDR (same lookup pattern used by
+        get_latest_squad and get_captain_suggestions).
         """
         row = dict(row)
         row["form_change"], row["price_change"] = None, None
@@ -1427,13 +1434,24 @@ def get_watchlist(entry_id: int, manual_picks: dict, min_minutes: int = 60) -> d
             ).fetchone()
             if prev:
                 row["price_change"] = round(row["price"] - prev["price"], 1)
+
+        # goals_scored is a cumulative season total, same as total_points -
+        # goals *this gameweek* only exists as a diff against the last
+        # snapshot that reflects a genuinely earlier gameweek, exactly the
+        # same gameweek-aware baseline form_change already uses (a plain
+        # previous-snapshot diff would read as 0 for the whole idle gap
+        # between gameweeks, or double-count if the pipeline runs more than
+        # once before the next gameweek is scored).
+        row["goals_this_week"] = None
         if form_baseline_date:
             prev_form = conn.execute(
-                "SELECT form FROM player_snapshots WHERE player_id = ? AND snapshot_date = ?",
+                "SELECT form, goals_scored FROM player_snapshots WHERE player_id = ? AND snapshot_date = ?",
                 (row["player_id"], form_baseline_date),
             ).fetchone()
             if prev_form:
                 row["form_change"] = round(row["form"] - prev_form["form"], 1)
+                if row.get("goals_scored") is not None and prev_form["goals_scored"] is not None:
+                    row["goals_this_week"] = row["goals_scored"] - prev_form["goals_scored"]
 
         row["status_label"] = STATUS_LABELS.get(row["status"], "Available")
 
@@ -1455,7 +1473,7 @@ def get_watchlist(entry_id: int, manual_picks: dict, min_minutes: int = 60) -> d
 
     pick_columns = (
         "player_id, name, team, price, total_points, points_per_game, form, "
-        "selected_by_percent, photo_code, status, chance_of_playing, news"
+        "selected_by_percent, photo_code, status, chance_of_playing, news, goals_scored"
     )
 
     watchlist = {}
