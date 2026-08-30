@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios, get_prior_season_summary, STATUS_LABELS
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_prediction_accuracy, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios, get_prior_season_summary, STATUS_LABELS
 from config import TEAM_ID, MY_WATCHLIST, CLAUDE_CHAT_URL
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
@@ -487,6 +487,7 @@ def build_html() -> str:
 
     profiles = get_all_player_profiles()
     formation = get_optimal_formation(TEAM_ID)
+    prediction_accuracy = get_prediction_accuracy(TEAM_ID)
     manager_stats = get_manager_stats(TEAM_ID)
 
     # manager_stats' numeric fields are None (not missing) for a
@@ -534,6 +535,7 @@ def build_html() -> str:
     squad_json = json.dumps(squad)
     squad_history_json = json.dumps(squad_history)
     what_if_json = json.dumps(what_if)
+    prediction_accuracy_json = json.dumps(prediction_accuracy)
     weekly_briefing_json = json.dumps(weekly_briefing)
     claude_chat_url_json = json.dumps(CLAUDE_CHAT_URL)
     formations_json = json.dumps(formations_by_label)
@@ -759,6 +761,15 @@ def build_html() -> str:
     </div>
 
     <div class="card">
+      <h2>Prediction Accuracy <span class="subtitle">(recommended XI, projected vs actual)</span></h2>
+      {"<p>Not enough data yet &mdash; this fills in once a predicted gameweek has actually been played. Every run from now on locks in that week's recommended XI and its projected total, so this builds up automatically.</p>" if not prediction_accuracy else '''
+      <canvas id="predictionAccuracyChart"></canvas>
+      <div id="predictionAccuracySummary" style="margin-top:14px;"></div>
+      <p class="muted" style="font-size:0.75rem;margin-top:10px;">Actual is the SAME 11 players the model recommended that week, summed unweighted (no captain bonus) - matching exactly how the projected total itself is calculated. This is a test of the form-based scoring model, not of the transfers or captain choice you actually made.</p>
+      '''}
+    </div>
+
+    <div class="card">
       <h2>Captain Suggestions <span class="subtitle">(form &times; fixture favourability)</span></h2>
       {"<p>Not enough fixture data yet.</p>" if not captain_picks else "".join(
           f'<div class="squad-row">{i+1}. {player_link(c["player_id"], c["name"])}'
@@ -880,6 +891,7 @@ const playerProfiles = {profiles_json};
 const squadData = {squad_json};
 const squadHistory = {squad_history_json};
 const whatIf = {what_if_json};
+const predictionAccuracy = {prediction_accuracy_json};
 const weeklyBriefing = {weekly_briefing_json};
 const claudeChatUrl = {claude_chat_url_json};
 const allFormations = {formations_json};
@@ -1234,6 +1246,47 @@ function renderWhatIf() {{
     `<div class="squad-row"><strong>Actual</strong> &mdash; ${{realityTotal}} pts</div>` + rows;
 }}
 
+function renderPredictionAccuracy() {{
+  const canvas = document.getElementById('predictionAccuracyChart');
+  if (!canvas || !predictionAccuracy.length) return;
+
+  new Chart(canvas, {{
+    type: 'bar',
+    data: {{
+      labels: predictionAccuracy.map(p => `GW${{p.gameweek}}`),
+      datasets: [
+        {{ label: 'Predicted', data: predictionAccuracy.map(p => p.predicted_total), backgroundColor: CLAY, borderRadius: 4 }},
+        {{ label: 'Actual', data: predictionAccuracy.map(p => p.actual_total), backgroundColor: '#2B2620', borderRadius: 4 }},
+      ]
+    }},
+    options: {{ plugins: {{ legend: {{ position: 'bottom' }} }} }}
+  }});
+
+  // Mean absolute error is the honest "how reliable is this" number - average
+  // signed difference (bias) shows whether the model tends to over- or
+  // under-predict overall, which a pure error average would mask.
+  const n = predictionAccuracy.length;
+  const mae = predictionAccuracy.reduce((sum, p) => sum + Math.abs(p.difference), 0) / n;
+  const bias = predictionAccuracy.reduce((sum, p) => sum + p.difference, 0) / n;
+  const biasCls = bias > 0.5 ? 'text-good' : bias < -0.5 ? 'text-bad' : 'muted';
+  const biasText = bias > 0
+    ? `under-predicts by ${{bias.toFixed(1)}} pts on average`
+    : bias < 0
+      ? `over-predicts by ${{Math.abs(bias).toFixed(1)}} pts on average`
+      : 'dead on average';
+
+  const rows = predictionAccuracy.map(p => {{
+    const diffCls = p.difference > 0 ? 'text-good' : p.difference < 0 ? 'text-bad' : 'muted';
+    const diffText = p.difference > 0 ? `+${{p.difference}}` : `${{p.difference}}`;
+    return `<div class="squad-row">GW${{p.gameweek}} (${{p.formation}}) &mdash; predicted ${{p.predicted_total}}, actual ${{p.actual_total}} `
+         + `<span class="${{diffCls}}">(${{diffText}})</span></div>`;
+  }}).join('');
+
+  document.getElementById('predictionAccuracySummary').innerHTML =
+    `<div class="squad-row"><strong>Average error:</strong> ${{mae.toFixed(1)}} pts &mdash; `
+    + `<span class="${{biasCls}}">${{biasText}}</span> across ${{n}} predicted gameweek${{n === 1 ? '' : 's'}}</div>` + rows;
+}}
+
 new Chart(document.getElementById('moversChart'), {{
   type: 'bar',
   data: {{
@@ -1269,6 +1322,7 @@ new Chart(document.getElementById('valueChart'), {{
 }});
 
 renderWhatIf();
+renderPredictionAccuracy();
 
 const tbody = document.getElementById('tableBody');
 function renderTable(rows) {{

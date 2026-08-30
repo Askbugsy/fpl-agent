@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_element_summary, get_entry_picks, get_entry_summary, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_live_manager_summary, save_gameweek_summary, save_player_gw_history, clear_pending_gw_points, clear_pending_manager_stats, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_squad_alltime_player_ids
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_live_manager_summary, save_gameweek_summary, save_player_gw_history, save_formation_prediction, clear_pending_gw_points, clear_pending_manager_stats, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_squad_alltime_player_ids
 from config import TEAM_ID, MY_WATCHLIST
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -187,6 +187,13 @@ def main():
     if deadline:
         print(f"\n=== Next deadline ===")
         print(f"  Gameweek {deadline['gameweek']}: {deadline['deadline_time']}")
+
+        # Locks in this run's recommended-formation prediction for the
+        # upcoming gameweek, so it can be checked against reality once
+        # played - see save_formation_prediction's docstring for how
+        # this naturally stops updating once the gameweek kicks off.
+        if formation.get("formation"):
+            save_formation_prediction(TEAM_ID, deadline["gameweek"], formation)
 
     print("\n=== Watchlist ===")
     watchlist = get_watchlist(TEAM_ID, MY_WATCHLIST)

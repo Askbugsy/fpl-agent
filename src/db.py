@@ -114,6 +114,16 @@ CREATE TABLE IF NOT EXISTS fixtures (
     finished INTEGER NOT NULL,
     kickoff_time TEXT
 );
+
+CREATE TABLE IF NOT EXISTS formation_predictions (
+    entry_id INTEGER NOT NULL,
+    gameweek INTEGER NOT NULL,
+    formation TEXT,
+    projected_total REAL,
+    player_ids TEXT,        -- comma-separated player_ids of the predicted starting XI
+    predicted_date TEXT,    -- snapshot_date this prediction was computed from
+    PRIMARY KEY (entry_id, gameweek)
+);
 """
 
 
@@ -855,6 +865,104 @@ def get_optimal_formation(entry_id: int, min_minutes: int = 0) -> dict:
     best = dict(all_formations[0])
     best["all_formations"] = all_formations
     return best
+
+
+def save_formation_prediction(entry_id: int, gameweek: int, formation: dict) -> None:
+    """
+    Records the recommended formation's starting XI and projected
+    total for a gameweek that hasn't been played yet, so it can be
+    checked against reality once it has - the only way to build a
+    genuine track record of "how reliable is the form table" rather
+    than just trusting the model.
+
+    Called every pipeline run with the upcoming gameweek (from
+    get_next_deadline), INSERT OR REPLACE keyed on (entry_id,
+    gameweek) - the prediction naturally keeps refining with the
+    latest form/price/injury data right up until that gameweek's
+    fixtures kick off, at which point get_optimal_formation starts
+    projecting the FOLLOWING gameweek instead (its projections are
+    built from each player's next *unplayed* fixture), so this row
+    stops being touched and becomes the locked-in "final" prediction
+    - no separate locking logic needed.
+    """
+    if not formation.get("starting_xi"):
+        return
+    player_ids = ",".join(str(p["player_id"]) for p in formation["starting_xi"])
+
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO formation_predictions
+           (entry_id, gameweek, formation, projected_total, player_ids, predicted_date)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (entry_id, gameweek, formation["formation"], formation["projected_total"], player_ids, date.today().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_prediction_accuracy(entry_id: int) -> list[dict]:
+    """
+    For every gameweek that's been predicted (via save_formation_prediction)
+    and has since actually been played, looks up each of those exact
+    11 players' REAL points for that gameweek - from player_gw_history,
+    independent of who actually owned them, same source
+    get_what_if_scenarios uses - and sums them unweighted (no captain
+    doubling), matching exactly how projected_total itself is computed.
+    That keeps the comparison a fair test of the underlying form-based
+    scoring model, not of whatever transfers or captain choice you
+    actually made that week.
+
+    A gameweek only appears once it's genuinely finished AND every one
+    of the 11 predicted players has a real player_gw_history row for
+    it - a partial SUM over whichever players happened to sync first
+    would understate the real total and read as a false miss, so it's
+    held back entirely until the data's complete rather than shown
+    wrong. "Finished" is gameweek_summary.highest_score being set
+    (not average_score) - FPL populates average_score as a plain 0
+    for a gameweek that hasn't even started yet, so checking that
+    alone would treat every future gameweek as already played;
+    highest_score stays genuinely NULL until real results exist.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+
+    predictions = conn.execute(
+        """SELECT gameweek, formation, projected_total, player_ids
+           FROM formation_predictions WHERE entry_id = ? ORDER BY gameweek ASC""",
+        (entry_id,),
+    ).fetchall()
+
+    results = []
+    for p in predictions:
+        played = conn.execute(
+            "SELECT highest_score FROM gameweek_summary WHERE gameweek = ?",
+            (p["gameweek"],),
+        ).fetchone()
+        if not played or played["highest_score"] is None:
+            continue  # this gameweek hasn't been played yet - nothing to compare
+
+        player_ids = [int(pid) for pid in p["player_ids"].split(",") if pid]
+        if not player_ids:
+            continue
+        placeholders = ",".join("?" * len(player_ids))
+        actual = conn.execute(
+            f"""SELECT SUM(total_points) AS total, COUNT(*) AS n FROM player_gw_history
+               WHERE season = ? AND gameweek = ? AND player_id IN ({placeholders})""",
+            [CURRENT_SEASON, p["gameweek"]] + player_ids,
+        ).fetchone()
+        if not actual or actual["n"] < len(player_ids):
+            continue  # player history hasn't fully synced for this gameweek yet
+
+        results.append({
+            "gameweek": p["gameweek"],
+            "formation": p["formation"],
+            "predicted_total": p["projected_total"],
+            "actual_total": actual["total"],
+            "difference": round(actual["total"] - p["projected_total"], 2),
+        })
+
+    conn.close()
+    return results
 
 
 def get_squad_team_ids(entry_id: int) -> list[int]:
