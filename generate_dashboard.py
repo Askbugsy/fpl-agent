@@ -125,6 +125,10 @@ def render_watchlist_pick(pick: dict) -> str:
         pc = pick["price_change"]
         pc_cls = "text-good" if pc > 0 else "text-bad" if pc < 0 else "muted"
         trend_parts.append(f'<span class="{pc_cls}">price {pc:+.1f}m</span>')
+    if pick.get("goals_this_week") is not None:
+        g = pick["goals_this_week"]
+        g_cls = "text-good" if g > 0 else "muted"
+        trend_parts.append(f'<span class="{g_cls}">{g} goal{"" if g == 1 else "s"} this GW</span>')
     trend = f' {" ".join(trend_parts)}' if trend_parts else ""
 
     # A watchlist exists to decide whether to actually buy someone, not
@@ -277,9 +281,13 @@ def _watchlist_pick_text(pick: dict) -> str:
         swap_note = f" (swap idea: OUT {swap['out_name']} form {swap['out_form']}, £{swap['budget_after']}m left after)"
     elif swap:
         swap_note = f" (need £{swap['shortfall']}m more, vs selling {swap['out_name']})"
+    goals_note = ""
+    if pick.get("goals_this_week") is not None:
+        g = pick["goals_this_week"]
+        goals_note = f", {g} goal{'' if g == 1 else 's'} this GW"
     return (
         f"{pick['name']} £{pick['price']}m, {pick['points_per_game']} PPG, {pick['total_points']} pts, "
-        f"{pick['selected_by_percent']}% owned, {fixture}{status_note}{swap_note}"
+        f"{pick['selected_by_percent']}% owned{goals_note}, {fixture}{status_note}{swap_note}"
     )
 
 
