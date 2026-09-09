@@ -125,6 +125,17 @@ CREATE TABLE IF NOT EXISTS formation_predictions (
     predicted_date TEXT,    -- snapshot_date this prediction was computed from
     PRIMARY KEY (entry_id, gameweek)
 );
+
+CREATE TABLE IF NOT EXISTS mini_league_standing (
+    entry_id INTEGER NOT NULL,
+    league_id INTEGER NOT NULL,
+    league_name TEXT,
+    rank INTEGER,
+    last_rank INTEGER,      -- FPL's own previous-gameweek rank in this league; 0 = not available yet
+    rank_count INTEGER,     -- total entries in the league
+    updated_date TEXT,
+    PRIMARY KEY (entry_id, league_id)
+);
 """
 
 
@@ -452,6 +463,72 @@ def save_live_manager_summary(entry_id: int, gameweek: int, live_summary: dict) 
     )
     conn.commit()
     conn.close()
+
+
+def save_mini_league_standing(entry_id: int, league_id: int, live_summary: dict) -> None:
+    """
+    Extracts one specific classic mini-league's standing for this
+    entry out of the live manager summary's leagues.classic list -
+    the same /entry/{id}/ call already fetched every run for
+    total_points/rank, so this costs no extra API call. Overwrites in
+    place (one row per league, not a dated history) since FPL's own
+    entry_last_rank field already carries the week-over-week
+    comparison - no need to diff our own snapshots to show a trend.
+
+    A no-op if this entry isn't (or is no longer) a member of
+    league_id - callers should treat a missing row as "not available"
+    rather than assume membership.
+    """
+    classic = live_summary.get("leagues", {}).get("classic", [])
+    league = next((l for l in classic if l.get("id") == league_id), None)
+    if not league:
+        return
+
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO mini_league_standing
+           (entry_id, league_id, league_name, rank, last_rank, rank_count, updated_date)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            entry_id, league_id, league.get("name"),
+            league.get("entry_rank"), league.get("entry_last_rank"),
+            league.get("rank_count"), date.today().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_mini_league_standing(entry_id: int, league_id: int | None) -> dict:
+    """
+    Current standing in the one tracked mini-league (config.MINI_LEAGUE_ID),
+    plus a rank_change vs last gameweek using FPL's own entry_last_rank -
+    positive means moved up the table (lower rank number is better),
+    negative means slipped. None when league_id is unset, this entry
+    has no saved standing yet, or FPL hasn't got a last_rank on record
+    yet (it comes back as a literal 0, not a real rank, e.g. right
+    after joining a league - treated as "no trend data" rather than
+    a fabricated comparison against rank zero).
+    """
+    if league_id is None:
+        return {}
+
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """SELECT league_name, rank, last_rank, rank_count, updated_date
+           FROM mini_league_standing WHERE entry_id = ? AND league_id = ?""",
+        (entry_id, league_id),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {}
+
+    standing = dict(row)
+    standing["rank_change"] = None
+    if standing["rank"] is not None and standing["last_rank"]:
+        standing["rank_change"] = standing["last_rank"] - standing["rank"]
+    return standing
 
 
 def save_gameweek_summary(events: list[dict]) -> None:
