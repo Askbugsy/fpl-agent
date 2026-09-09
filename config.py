@@ -10,6 +10,12 @@ files.
 
 TEAM_ID = 6738704  # "Real Bugsy United"
 
+# A private/invitational classic mini-league to track on the dashboard
+# (rank, league size, trend vs last week). Find a league's ID in its
+# URL on the FPL site - fantasy.premierleague.com/leagues/<id>/standings/c.
+# Leave as None to skip the mini-league card entirely.
+MINI_LEAGUE_ID = 853188  # "Takeda UK"
+
 # Your own manual watchlist pick, one per position. Edit these names
 # to change your picks - matched against the live player data by
 # name each week, so no need to look up internal player IDs. If a

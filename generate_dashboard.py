@@ -21,8 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_prediction_accuracy, get_manager_stats, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios, get_prior_season_summary, STATUS_LABELS
-from config import TEAM_ID, MY_WATCHLIST, CLAUDE_CHAT_URL
+from db import get_connection, get_movers, get_top_value, get_latest_squad, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_all_player_profiles, get_optimal_formation, get_prediction_accuracy, get_manager_stats, get_mini_league_standing, get_next_deadline, get_watchlist, has_form_trend_baseline, get_squad_history, get_what_if_scenarios, get_prior_season_summary, STATUS_LABELS
+from config import TEAM_ID, MY_WATCHLIST, CLAUDE_CHAT_URL, MINI_LEAGUE_ID
 
 OUTPUT_PATH = Path(__file__).parent / "docs" / "index.html"
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -191,6 +191,34 @@ def render_watchlist_card(watchlist: dict) -> str:
     return rows
 
 
+def render_mini_league_card(mini_league: dict) -> str:
+    """
+    Rank in one tracked private/invitational classic mini-league
+    (config.MINI_LEAGUE_ID), with a week-over-week trend using FPL's
+    own entry_last_rank - see get_mini_league_standing's docstring for
+    why that's trusted directly rather than diffed from our own
+    snapshots.
+    """
+    if not mini_league:
+        return '<p class="muted">Not available yet - fills in on the next data pull.</p>'
+
+    trend = ""
+    change = mini_league.get("rank_change")
+    if change is not None and change != 0:
+        cls = "text-good" if change > 0 else "text-bad"
+        arrow = "&#9650;" if change > 0 else "&#9660;"
+        trend = f' <span class="{cls}">{arrow} {abs(change)} from last week</span>'
+    elif change == 0:
+        trend = ' <span class="muted">steady vs last week</span>'
+
+    return f'''
+    <div class="modal-stats">
+      <div><span>Rank</span><span><strong>{mini_league["rank"]} of {mini_league["rank_count"]}</strong></span></div>
+    </div>
+    <p class="subtitle" style="margin-top:6px;">{trend.strip() or "No trend data yet."}</p>
+    '''
+
+
 def render_formation_card(formation: dict) -> str:
     """
     Renders the comparison table server-side (so it's visible even if
@@ -325,7 +353,7 @@ def build_weekly_briefing(
     manager_stats: dict, starters: list[dict], bench: list[dict],
     captain_picks: list[dict], chip_advice: dict, transfer_suggestions: list[dict],
     watchlist: dict, formation: dict, what_if: dict, departed_contributions: list[dict],
-    next_deadline: dict,
+    next_deadline: dict, mini_league: dict,
 ) -> str:
     """
     Plain-text summary of the week, meant to be pasted straight into a
@@ -357,6 +385,14 @@ def build_weekly_briefing(
             lines.append(f"Overall rank: {manager_stats['overall_rank']:,}.")
         if manager_stats.get("bank") is not None and manager_stats.get("team_value") is not None:
             lines.append(f"Squad value £{manager_stats['team_value']}m, £{manager_stats['bank']}m in the bank.")
+        lines.append("")
+
+    if mini_league:
+        league_line = f"{mini_league['league_name']}: rank {mini_league['rank']} of {mini_league['rank_count']}"
+        change = mini_league.get("rank_change")
+        if change:
+            league_line += f" ({'up' if change > 0 else 'down'} {abs(change)} from last week)"
+        lines.append(league_line + ".")
         lines.append("")
 
     if starters or bench:
@@ -497,6 +533,7 @@ def build_html() -> str:
     formation = get_optimal_formation(TEAM_ID)
     prediction_accuracy = get_prediction_accuracy(TEAM_ID)
     manager_stats = get_manager_stats(TEAM_ID)
+    mini_league = get_mini_league_standing(TEAM_ID, MINI_LEAGUE_ID)
 
     # manager_stats' numeric fields are None (not missing) for a
     # gameweek still pending - plain dict.get(key, '-') only falls
@@ -533,7 +570,7 @@ def build_html() -> str:
     weekly_briefing = build_weekly_briefing(
         manager_stats, starters, bench, captain_picks, chip_advice,
         transfer_suggestions, watchlist, formation, what_if,
-        departed_contributions, next_deadline,
+        departed_contributions, next_deadline, mini_league,
     )
 
     movers_json = json.dumps(movers)
@@ -740,6 +777,13 @@ def build_html() -> str:
       </div>
       '''}
     </div>
+
+    {"" if not MINI_LEAGUE_ID else f'''
+    <div class="card">
+      <h2>{mini_league.get("league_name", "Mini League")}</h2>
+      {render_mini_league_card(mini_league)}
+    </div>
+    '''}
 
     <div class="card">
       <h2>Current Squad {"" if not starters else f"&mdash; {squad_total} pts this gameweek"}</h2>

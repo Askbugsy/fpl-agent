@@ -21,8 +21,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_element_summary, get_entry_picks, get_entry_summary, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_live_manager_summary, save_gameweek_summary, save_player_gw_history, save_formation_prediction, clear_pending_gw_points, clear_pending_manager_stats, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_squad_alltime_player_ids
-from config import TEAM_ID, MY_WATCHLIST
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_live_manager_summary, save_mini_league_standing, save_gameweek_summary, save_player_gw_history, save_formation_prediction, clear_pending_gw_points, clear_pending_manager_stats, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_mini_league_standing, get_squad_alltime_player_ids
+from config import TEAM_ID, MY_WATCHLIST, MINI_LEAGUE_ID
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
@@ -75,6 +75,12 @@ def main():
             live_summary = get_entry_summary(TEAM_ID)
         except Exception as e:
             print(f"Could not fetch live manager summary: {e}\n")
+
+        # Same live summary call already carries this entry's classic
+        # mini-league memberships - costs nothing extra to also record
+        # the one tracked league's standing (config.MINI_LEAGUE_ID).
+        if live_summary and MINI_LEAGUE_ID is not None:
+            save_mini_league_standing(TEAM_ID, MINI_LEAGUE_ID, live_summary)
 
         try:
             picks_data = get_entry_picks(TEAM_ID, current_gw)
@@ -194,6 +200,11 @@ def main():
         # this naturally stops updating once the gameweek kicks off.
         if formation.get("formation"):
             save_formation_prediction(TEAM_ID, deadline["gameweek"], formation)
+
+    mini_league = get_mini_league_standing(TEAM_ID, MINI_LEAGUE_ID)
+    if mini_league:
+        print(f"\n=== {mini_league['league_name']} ===")
+        print(f"  Rank {mini_league['rank']} of {mini_league['rank_count']}")
 
     print("\n=== Watchlist ===")
     watchlist = get_watchlist(TEAM_ID, MY_WATCHLIST)
