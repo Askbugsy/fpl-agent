@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from fpl_client import get_bootstrap_static, get_element_summary, get_entry_picks, get_entry_summary, get_fixtures
-from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_live_manager_summary, save_mini_league_standing, save_gameweek_summary, save_player_gw_history, save_formation_prediction, clear_pending_gw_points, clear_pending_manager_stats, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_mini_league_standing, get_squad_alltime_player_ids
+from db import save_snapshot, save_squad_picks, save_teams, save_fixtures, save_entry_summary, save_live_manager_summary, save_mini_league_standing, save_gameweek_summary, save_player_gw_history, save_formation_prediction, clear_pending_gw_points, clear_pending_manager_stats, get_movers, get_top_value, get_captain_suggestions, get_chip_suggestions, get_transfer_suggestions, get_optimal_formation, get_next_deadline, get_watchlist, get_mini_league_standing, get_squad_last_saved_gw, get_squad_alltime_player_ids
 from config import TEAM_ID, MY_WATCHLIST, MINI_LEAGUE_ID
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -61,7 +61,23 @@ def main():
         current_gw = next((e["id"] for e in data["events"] if e["is_current"]), None)
 
     if current_gw:
-        print(f"Fetching your squad (Team ID {TEAM_ID}) for Gameweek {current_gw}...")
+        # Normally there's just one gameweek to fetch: current_gw. But
+        # the weekly cron and FPL's gameweek calendar aren't perfectly
+        # in step - if a gameweek both opens and fully finishes inside
+        # a single gap between runs (e.g. a short turnaround week, or a
+        # run that got skipped), it would never be "current" on any
+        # run, and current_gw would jump straight past it. That
+        # gameweek's squad/points then went unfetched forever, even
+        # though its picks are genuinely available once its deadline
+        # has passed. Walking forward from the last gameweek we
+        # actually have squad_picks for (instead of only ever trying
+        # current_gw) catches up on any such gap automatically, the
+        # next time this runs.
+        last_saved_gw = get_squad_last_saved_gw(TEAM_ID)
+        start_gw = (last_saved_gw + 1) if last_saved_gw else current_gw
+        gws_to_fetch = list(range(start_gw, current_gw + 1))
+
+        print(f"Fetching your squad (Team ID {TEAM_ID}) for Gameweek(s) {gws_to_fetch}...")
 
         # The live manager summary (/entry/{id}/) isn't gated behind a
         # gameweek's deadline the way picks are - it's always available,
@@ -82,38 +98,47 @@ def main():
         if live_summary and MINI_LEAGUE_ID is not None:
             save_mini_league_standing(TEAM_ID, MINI_LEAGUE_ID, live_summary)
 
-        try:
-            picks_data = get_entry_picks(TEAM_ID, current_gw)
+        player_points = {p["id"]: p["event_points"] for p in players}
+        for gw in gws_to_fetch:
+            try:
+                picks_data = get_entry_picks(TEAM_ID, gw)
+                save_squad_picks(TEAM_ID, gw, picks_data, player_points)
+                # live_summary reflects standing right now, not as of a
+                # past gameweek - only worth passing for current_gw
+                # itself; a backfilled older gw uses entry_history's own
+                # frozen-at-the-time rank/points instead (the correct
+                # source of truth for a gameweek that's already over).
+                save_entry_summary(TEAM_ID, gw, picks_data.get("entry_history", {}), live_summary if gw == current_gw else None)
+                print(f"  GW{gw}: squad saved.")
+            except Exception as e:
+                # Most commonly a 404: the public picks endpoint doesn't
+                # expose a gameweek until its deadline has passed, even for
+                # your own team - that's by design, so rivals can't scout
+                # your squad early. There's no way around this without your
+                # own login, which FPL's identity provider doesn't allow a
+                # script to do on your behalf.
+                print(f"  GW{gw}: could not fetch squad ({e}).")
 
-            player_points = {p["id"]: p["event_points"] for p in players}
-            save_squad_picks(TEAM_ID, current_gw, picks_data, player_points)
-            save_entry_summary(TEAM_ID, current_gw, picks_data.get("entry_history", {}), live_summary)
-            print("Squad saved.\n")
-        except Exception as e:
-            # Most commonly a 404: the public picks endpoint doesn't
-            # expose a gameweek until its deadline has passed, even for
-            # your own team - that's by design, so rivals can't scout
-            # your squad early. There's no way around this without your
-            # own login, which FPL's identity provider doesn't allow a
-            # script to do on your behalf.
-            print(f"Could not fetch squad for GW{current_gw}: {e}\n")
+                if gw == current_gw:
+                    # If an earlier run already saved a squad for this still-pending
+                    # gameweek, any gw_points sitting there are stale/mislabeled -
+                    # not real GW{gw} results, since the gameweek hasn't
+                    # been played. Blank them out rather than let the dashboard
+                    # show a fabricated total until the real fetch above succeeds.
+                    clear_pending_gw_points(TEAM_ID, gw)
+                    clear_pending_manager_stats(TEAM_ID, gw)
 
-            # If an earlier run already saved a squad for this still-pending
-            # gameweek, any gw_points sitting there are stale/mislabeled -
-            # not real GW{current_gw} results, since the gameweek hasn't
-            # been played. Blank them out rather than let the dashboard
-            # show a fabricated total until the real fetch above succeeds.
-            clear_pending_gw_points(TEAM_ID, current_gw)
-            clear_pending_manager_stats(TEAM_ID, current_gw)
+                    # Bank/team value/gw points genuinely aren't known yet for a
+                    # pending gameweek, but total points/overall rank/gw rank are
+                    # live standings that exist independently of this gameweek's
+                    # result - save whatever the live summary call above got,
+                    # so the dashboard's cumulative view stays current instead of
+                    # showing last week's total all week.
+                    if live_summary:
+                        save_live_manager_summary(TEAM_ID, gw, live_summary)
+            time.sleep(0.2)
+        print()
 
-            # Bank/team value/gw points genuinely aren't known yet for a
-            # pending gameweek, but total points/overall rank/gw rank are
-            # live standings that exist independently of this gameweek's
-            # result - save whatever the live summary call above got,
-            # so the dashboard's cumulative view stays current instead of
-            # showing last week's total all week.
-            if live_summary:
-                save_live_manager_summary(TEAM_ID, current_gw, live_summary)
 
     # Keeps the "What Could Have Been" trajectories current: only the
     # players who've ever actually been in your squad (a season's worth

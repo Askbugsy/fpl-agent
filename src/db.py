@@ -1629,6 +1629,22 @@ def save_player_gw_history(player_id: int, summary: dict) -> None:
     conn.close()
 
 
+def get_squad_last_saved_gw(entry_id: int) -> int | None:
+    """
+    The most recent gameweek this entry actually has real squad_picks
+    for - the backfill starting point main.py uses to catch up on any
+    gameweek that got skipped entirely (see the comment above its
+    call site for how that can happen). None if no squad has ever
+    been saved yet (very start of a season).
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT MAX(gameweek) AS gw FROM squad_picks WHERE entry_id = ?", (entry_id,)
+    ).fetchone()
+    conn.close()
+    return row[0]
+
+
 def get_squad_alltime_player_ids(entry_id: int) -> list[int]:
     """
     Every player who has ever appeared in this entry's squad_picks,
